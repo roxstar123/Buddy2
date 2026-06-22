@@ -323,12 +323,44 @@
       flex-shrink: 0;
     }
 
-    /* Hidden file input */
+    .fw-version-badge {
+      display: none;
+      font-family: var(--mono);
+      font-size: 9px;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: var(--live);
+      border: 1px solid var(--live);
+      padding: 2px 7px;
+      margin-top: 5px;
+      width: fit-content;
+    }
+
+    .fw-zone.bundled .fw-version-badge { display: block; }
+
+    .fw-override-link {
+      display: none;
+      margin-top: 8px;
+      font-family: var(--mono);
+      font-size: 10px;
+      color: var(--text-dim);
+      letter-spacing: 0.06em;
+      cursor: pointer;
+      background: none;
+      border: none;
+      padding: 0;
+      text-align: left;
+    }
+
+    .fw-override-link:hover { color: var(--text-mid); }
+
+    /* Hidden file input — covers only the zone, not the override link */
     #fw-file-input {
       position: absolute;
       inset: 0;
       opacity: 0;
       cursor: pointer;
+      pointer-events: none; /* toggled by JS */
     }
 
     /* Config row */
@@ -564,7 +596,7 @@
         <div class="page-label">firmware</div>
         <h1 class="page-title">Flash your buddy.</h1>
         <p class="page-subtitle">
-          Connect your ESP32 over USB, select a compiled <code style="font-family:var(--mono);font-size:12px;color:var(--accent)">.bin</code> file, and write it directly from the browser. No esptool install required.
+          Firmware is bundled. Connect your ESP32 over USB, hit flash. No esptool install, no manual file hunting. Replace <code style="font-family:var(--mono);font-size:12px;color:var(--accent)">firmware/buddy.bin</code> to update.
         </p>
       </div>
       <div class="browser-badge">
@@ -589,7 +621,7 @@
           </li>
           <li class="prereq-item">
             <span class="prereq-marker">[3]</span>
-            <span class="prereq-text"><strong>Compiled .bin file</strong> — built from Arduino IDE or PlatformIO. Use the merged binary if available.</span>
+            <span class="prereq-text"><strong>Firmware is pre-loaded</strong> — bundled from <code style="font-family:var(--mono);font-size:10px;color:var(--accent)">firmware/buddy.bin</code>. Replace that file to update. You can also override it by dropping a different <code style="font-family:var(--mono);font-size:10px;color:var(--accent)">.bin</code> onto the zone.</span>
           </li>
           <li class="prereq-item">
             <span class="prereq-marker">[4]</span>
@@ -648,12 +680,16 @@
           <div class="fw-zone-inner">
             <div class="fw-icon" id="fw-icon">.bin</div>
             <div class="fw-text">
-              <div class="fw-title" id="fw-title">drag and drop or click to select</div>
-              <div class="fw-sub" id="fw-sub">accepts .bin files only</div>
+              <div class="fw-title" id="fw-title">loading bundled firmware...</div>
+              <div class="fw-sub" id="fw-sub">firmware/buddy.bin</div>
+              <div class="fw-version-badge" id="fw-version-badge">bundled</div>
             </div>
             <span class="fw-size" id="fw-size"></span>
           </div>
         </div>
+        <button class="fw-override-link" id="fw-override-link" style="display:none">
+          use a different file ->
+        </button>
       </div>
 
       <!-- Configuration -->
@@ -729,11 +765,13 @@
 
     // ── DOM refs ─────────────────────────────────────────────────────────────
 
-    const fwZone       = document.getElementById('fw-zone');
-    const fwInput      = document.getElementById('fw-file-input');
-    const fwTitle      = document.getElementById('fw-title');
-    const fwSub        = document.getElementById('fw-sub');
-    const fwSize       = document.getElementById('fw-size');
+    const fwZone         = document.getElementById('fw-zone');
+    const fwInput        = document.getElementById('fw-file-input');
+    const fwTitle        = document.getElementById('fw-title');
+    const fwSub          = document.getElementById('fw-sub');
+    const fwSize         = document.getElementById('fw-size');
+    const fwVersionBadge = document.getElementById('fw-version-badge');
+    const fwOverrideLink = document.getElementById('fw-override-link');
     const btnConnect   = document.getElementById('btn-connect');
     const btnFlash     = document.getElementById('btn-flash');
     const btnDisconnect= document.getElementById('btn-disconnect');
@@ -784,6 +822,49 @@
 
     // ── File input ───────────────────────────────────────────────────────────
 
+    // ── Bundled firmware auto-load ────────────────────────────────────────────
+
+    async function loadBundledFirmware() {
+      try {
+        const [mRes, bRes] = await Promise.all([
+          fetch('/firmware/manifest.json'),
+          fetch('/firmware/buddy.bin'),
+        ]);
+
+        if (!mRes.ok) throw new Error('manifest not found');
+        if (!bRes.ok) throw new Error('buddy.bin not found');
+
+        const manifest = await mRes.json();
+        const buf      = await bRes.arrayBuffer();
+        firmwareBytes  = new Uint8Array(buf);
+
+        // Apply manifest settings to config fields
+        document.getElementById('flash-addr').value = manifest.flashAddress || '0x0';
+        if (manifest.flashMode) document.getElementById('flash-mode').value = manifest.flashMode;
+
+        // Update UI
+        fwZone.classList.add('has-file', 'bundled');
+        fwTitle.textContent        = manifest.name + '  v' + manifest.version;
+        fwSub.textContent          = manifest.chip + ' — ' + formatBytes(firmwareBytes.length);
+        fwVersionBadge.textContent = 'bundled v' + manifest.version;
+        fwOverrideLink.style.display = 'block';
+
+        log('bundled firmware ready: ' + manifest.name + ' v' + manifest.version);
+        log(manifest.description);
+        log(formatBytes(firmwareBytes.length) + ' — flash at ' + (manifest.flashAddress || '0x0'));
+        updateButtons();
+      } catch (err) {
+        fwTitle.textContent = 'firmware/buddy.bin not found';
+        fwSub.textContent   = 'drop a .bin file or check the firmware folder';
+        log('bundled firmware unavailable: ' + err.message, 'err');
+        log('drop a .bin file onto the zone above to continue.');
+        fwOverrideLink.style.display = 'block';
+        fwOverrideLink.textContent   = 'select a .bin file ->';
+      }
+    }
+
+    // ── File input (manual override) ─────────────────────────────────────────
+
     fwInput.addEventListener('change', async () => {
       const file = fwInput.files[0];
       if (!file) return;
@@ -809,12 +890,29 @@
       const buf = await file.arrayBuffer();
       firmwareBytes = new Uint8Array(buf);
       fwZone.classList.add('has-file');
-      fwTitle.textContent = file.name;
-      fwSub.textContent   = formatBytes(file.size);
+      fwZone.classList.remove('bundled');
+      fwTitle.textContent          = file.name;
+      fwSub.textContent            = 'custom — ' + formatBytes(file.size);
+      fwVersionBadge.textContent   = 'custom';
+      fwVersionBadge.style.display = 'block';
+      fwVersionBadge.style.color   = 'var(--accent)';
+      fwVersionBadge.style.borderColor = 'var(--accent-dim)';
+      fwOverrideLink.textContent   = 'use bundled firmware ->';
       fwSize.textContent  = '';
-      log('loaded: ' + file.name + ' (' + formatBytes(file.size) + ')', 'accent');
+      log('custom firmware loaded: ' + file.name + ' (' + formatBytes(file.size) + ')', 'accent');
       updateButtons();
     }
+
+    // "use bundled firmware" after loading custom
+    fwOverrideLink.addEventListener('click', () => {
+      if (fwOverrideLink.textContent.includes('bundled')) {
+        fwVersionBadge.style.color = '';
+        fwVersionBadge.style.borderColor = '';
+        loadBundledFirmware();
+      } else {
+        fwInput.click();
+      }
+    }, { capture: false });
 
     // ── Connect ──────────────────────────────────────────────────────────────
 
@@ -953,11 +1051,10 @@
       log('this page requires Chrome or Edge 89+.', 'err');
       btnConnect.disabled = true;
       setStatus('unsupported browser', true);
-    } else {
-      log('ready. select a .bin file and connect your ESP32.');
     }
 
     updateButtons();
+    loadBundledFirmware();
   </script>
 
 </body>

@@ -1,0 +1,8 @@
+{
+  "name": "buddy-firmware",
+  "version": "0.1.0",
+  "chip": "ESP32",
+  "flashAddress": "0x0",
+  "flashMode": "dio",
+  "description": "Buddy ESP32 — camera stream, two-way audio, motor control over WebSocket"
+}

@@ -20,6 +20,7 @@ const MIME = {
   '.woff': 'font/woff',
   '.woff2':'font/woff2',
   '.ttf':  'font/ttf',
+  '.bin':  'application/octet-stream',
 };
 
 // ── Buddy registry ────────────────────────────────────────────────────────────
