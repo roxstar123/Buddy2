@@ -1,7 +1,17 @@
 const http = require('http');
 const fs   = require('fs');
 const path = require('path');
+const os   = require('os');
 const { WebSocketServer } = require('ws');
+
+function getLocalIP() {
+  for (const ifaces of Object.values(os.networkInterfaces())) {
+    for (const iface of ifaces) {
+      if (iface.family === 'IPv4' && !iface.internal) return iface.address;
+    }
+  }
+  return '127.0.0.1';
+}
 
 const PORT = 3000;
 const ROOT = __dirname;
@@ -41,6 +51,13 @@ function send(ws, payload) {
 
 const server = http.createServer((req, res) => {
   let urlPath = req.url.split('?')[0];
+
+  // API: return server's local network IP (used by flash page to pre-fill host field)
+  if (urlPath === '/api/ip') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    return res.end(JSON.stringify({ ip: getLocalIP(), port: PORT }));
+  }
+
   if (urlPath === '/') urlPath = '/index.html';
 
   // Serve bundled libraries from node_modules

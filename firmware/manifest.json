@@ -1,8 +1,10 @@
 {
   "name": "buddy-firmware",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "chip": "ESP32",
+  "board": "AI-Thinker ESP32-CAM",
   "flashAddress": "0x0",
   "flashMode": "dio",
-  "description": "Buddy ESP32 — camera stream, two-way audio, motor control over WebSocket"
+  "source": "buddy_firmware.ino",
+  "description": "Buddy ESP32 v1.0 — camera stream, two-way audio, motor control over WebSocket"
 }

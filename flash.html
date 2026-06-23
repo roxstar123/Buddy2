@@ -412,6 +412,104 @@
 
     .config-select:focus { border-color: var(--accent-dim); }
 
+    /* ─── DEVICE SETTINGS ────────────────────────────────────── */
+
+    .device-settings {
+      border: 1px solid var(--border);
+      background: var(--s1);
+    }
+
+    .device-settings-header {
+      padding: 10px 16px;
+      border-bottom: 1px solid var(--border);
+      background: var(--s2);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .device-settings-title {
+      font-family: var(--mono);
+      font-size: 10px;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--text-dim);
+    }
+
+    .patch-status {
+      font-family: var(--mono);
+      font-size: 9px;
+      letter-spacing: 0.08em;
+      color: var(--text-dim);
+    }
+
+    .patch-status.found  { color: var(--live); }
+    .patch-status.missing { color: var(--accent-dim); }
+
+    .device-settings-body {
+      padding: 16px;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+    }
+
+    .device-settings-body .config-field.full {
+      grid-column: 1 / -1;
+    }
+
+    .pass-wrap {
+      display: flex;
+      gap: 0;
+    }
+
+    .pass-wrap .config-input {
+      flex: 1;
+      border-right: none;
+    }
+
+    .pass-toggle {
+      padding: 0 12px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      color: var(--text-dim);
+      font-family: var(--mono);
+      font-size: 10px;
+      letter-spacing: 0.06em;
+      cursor: pointer;
+      white-space: nowrap;
+      flex-shrink: 0;
+    }
+
+    .pass-toggle:hover { color: var(--text-mid); }
+
+    .buddy-id-wrap {
+      display: flex;
+      border: 1px solid var(--border);
+      background: var(--bg);
+    }
+
+    .buddy-id-prefix {
+      font-family: var(--mono);
+      font-size: 12px;
+      color: var(--accent-dim);
+      padding: 9px 12px;
+      border-right: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      white-space: nowrap;
+      background: var(--bg);
+    }
+
+    .buddy-id-wrap .config-input {
+      border: none;
+      background: transparent;
+    }
+
+    .buddy-id-wrap .config-input:focus {
+      border: none;
+      outline: none;
+    }
+
     /* Action buttons */
     .action-row {
       display: flex;
@@ -667,6 +765,23 @@
         </p>
       </div>
 
+      <div>
+        <div class="sidebar-section-label">firmware patch block</div>
+        <p style="font-size:12px;font-weight:300;color:var(--text-mid);line-height:1.65;margin-bottom:10px">
+          Add this struct to your ESP32 firmware. The flash tool finds the magic bytes and writes your settings directly into the binary.
+        </p>
+        <pre style="font-family:var(--mono);font-size:9px;color:var(--text-mid);line-height:1.7;overflow-x:auto;background:var(--bg);border:1px solid var(--border-dim);padding:10px;white-space:pre-wrap">struct __attribute__((packed)) {
+  uint8_t magic[8] =
+    {0xBD,0xBD,0xBD,0xBD,
+     0x42,0x55,0x44,0x59};
+  char ssid[32] = "YOUR_SSID";
+  char pass[64] = "YOUR_PASS";
+  char host[40] = "192.168.1.x";
+  uint32_t port = 3000;
+  char id[16]   = "BDY-00001";
+} buddy_cfg;</pre>
+      </div>
+
     </aside>
 
     <!-- FLASH PANEL -->
@@ -692,7 +807,49 @@
         </button>
       </div>
 
-      <!-- Configuration -->
+      <!-- Device settings (patched into binary before flash) -->
+      <div class="device-settings">
+        <div class="device-settings-header">
+          <span class="device-settings-title">device settings</span>
+          <span class="patch-status" id="patch-status">patch block: scanning...</span>
+        </div>
+        <div class="device-settings-body">
+
+          <div class="config-field">
+            <div class="config-label">wifi network (ssid)</div>
+            <input class="config-input" id="cfg-ssid" type="text" placeholder="MyNetwork" maxlength="31" spellcheck="false" autocomplete="off" />
+          </div>
+
+          <div class="config-field">
+            <div class="config-label">wifi password</div>
+            <div class="pass-wrap">
+              <input class="config-input" id="cfg-pass" type="password" placeholder="••••••••" maxlength="63" spellcheck="false" autocomplete="off" />
+              <button class="pass-toggle" id="pass-toggle" type="button">show</button>
+            </div>
+          </div>
+
+          <div class="config-field">
+            <div class="config-label">hub server ip</div>
+            <input class="config-input" id="cfg-host" type="text" placeholder="detecting..." maxlength="39" spellcheck="false" autocomplete="off" />
+          </div>
+
+          <div class="config-field">
+            <div class="config-label">hub port</div>
+            <input class="config-input" id="cfg-port" type="text" value="3000" maxlength="5" spellcheck="false" />
+          </div>
+
+          <div class="config-field full">
+            <div class="config-label">buddy id</div>
+            <div class="buddy-id-wrap">
+              <span class="buddy-id-prefix">BDY-</span>
+              <input class="config-input" id="cfg-id" type="text" placeholder="00001" maxlength="11" spellcheck="false" autocomplete="off" />
+            </div>
+          </div>
+
+        </div>
+      </div>
+
+      <!-- Flash options -->
       <div class="config-row">
         <div class="config-field">
           <div class="config-label">flash address</div>
@@ -764,6 +921,27 @@
     let isFlashing = false;
 
     // ── DOM refs ─────────────────────────────────────────────────────────────
+
+    // ── Device settings refs ─────────────────────────────────────────────────
+    const cfgSsid    = document.getElementById('cfg-ssid');
+    const cfgPass    = document.getElementById('cfg-pass');
+    const cfgHost    = document.getElementById('cfg-host');
+    const cfgPort    = document.getElementById('cfg-port');
+    const cfgId      = document.getElementById('cfg-id');
+    const passToggle = document.getElementById('pass-toggle');
+    const patchStatus= document.getElementById('patch-status');
+
+    passToggle.addEventListener('click', () => {
+      const show = cfgPass.type === 'password';
+      cfgPass.type       = show ? 'text' : 'password';
+      passToggle.textContent = show ? 'hide' : 'show';
+    });
+
+    // Auto-fill server IP from /api/ip
+    fetch('/api/ip').then(r => r.json()).then(({ ip, port }) => {
+      cfgHost.value = ip;
+      cfgPort.value = port;
+    }).catch(() => {});
 
     const fwZone         = document.getElementById('fw-zone');
     const fwInput        = document.getElementById('fw-file-input');
@@ -852,6 +1030,7 @@
         log('bundled firmware ready: ' + manifest.name + ' v' + manifest.version);
         log(manifest.description);
         log(formatBytes(firmwareBytes.length) + ' — flash at ' + (manifest.flashAddress || '0x0'));
+        scanForPatchBlock(firmwareBytes);
         updateButtons();
       } catch (err) {
         fwTitle.textContent = 'firmware/buddy.bin not found';
@@ -900,6 +1079,7 @@
       fwOverrideLink.textContent   = 'use bundled firmware ->';
       fwSize.textContent  = '';
       log('custom firmware loaded: ' + file.name + ' (' + formatBytes(file.size) + ')', 'accent');
+      scanForPatchBlock(firmwareBytes);
       updateButtons();
     }
 
@@ -913,6 +1093,79 @@
         fwInput.click();
       }
     }, { capture: false });
+
+    // ── Firmware binary patcher ──────────────────────────────────────────────
+    // Magic: 0xBD 0xBD 0xBD 0xBD 0x42 0x55 0x44 0x59 ("BDBD" + "BUDY")
+    // Layout after magic (164 bytes total):
+    //   ssid[32]  pass[64]  host[40]  port[4 LE]  id[16]
+
+    const CFG_MAGIC = new Uint8Array([0xBD,0xBD,0xBD,0xBD,0x42,0x55,0x44,0x59]);
+
+    function findMagic(bytes) {
+      outer: for (let i = 0; i <= bytes.length - CFG_MAGIC.length; i++) {
+        for (let j = 0; j < CFG_MAGIC.length; j++) {
+          if (bytes[i + j] !== CFG_MAGIC[j]) continue outer;
+        }
+        return i;
+      }
+      return -1;
+    }
+
+    function writeStr(buf, offset, str, maxLen) {
+      const enc = new TextEncoder().encode(str);
+      buf.fill(0, offset, offset + maxLen);
+      buf.set(enc.subarray(0, maxLen - 1), offset);
+    }
+
+    function writeU32LE(buf, offset, val) {
+      buf[offset]   =  val        & 0xFF;
+      buf[offset+1] = (val >>  8) & 0xFF;
+      buf[offset+2] = (val >> 16) & 0xFF;
+      buf[offset+3] = (val >> 24) & 0xFF;
+    }
+
+    function patchFirmware(src) {
+      const idx = findMagic(src);
+      if (idx === -1) {
+        log('no config block in firmware — flashing as-is (device settings not applied)');
+        patchStatus.textContent = 'patch block: not found';
+        patchStatus.className = 'patch-status missing';
+        return src;
+      }
+
+      const patched = new Uint8Array(src);
+      let off = idx + CFG_MAGIC.length;
+
+      const ssid = cfgSsid.value.trim();
+      const pass = cfgPass.value;
+      const host = cfgHost.value.trim();
+      const port = parseInt(cfgPort.value.trim()) || 3000;
+      const id   = 'BDY-' + cfgId.value.trim().toUpperCase().replace(/^BDY-/i,'');
+
+      writeStr(patched, off, ssid, 32); off += 32;
+      writeStr(patched, off, pass, 64); off += 64;
+      writeStr(patched, off, host, 40); off += 40;
+      writeU32LE(patched, off, port);   off +=  4;
+      writeStr(patched, off, id,   16); off += 16;
+
+      log('patched config block at 0x' + idx.toString(16) + ':');
+      log('  ssid: ' + (ssid || '(empty)'));
+      log('  host: ' + host + ':' + port);
+      log('  id:   ' + id);
+      return patched;
+    }
+
+    // Scan firmware for patch block whenever it loads
+    function scanForPatchBlock(bytes) {
+      const idx = findMagic(bytes);
+      if (idx !== -1) {
+        patchStatus.textContent = 'patch block: found at 0x' + idx.toString(16);
+        patchStatus.className   = 'patch-status found';
+      } else {
+        patchStatus.textContent = 'patch block: not found';
+        patchStatus.className   = 'patch-status missing';
+      }
+    }
 
     // ── Connect ──────────────────────────────────────────────────────────────
 
@@ -979,11 +1232,12 @@
       progressPct.textContent  = '0%';
       progressLabel.textContent = 'erasing...';
 
-      log('writing ' + formatBytes(firmwareBytes.length) + ' to 0x' + address.toString(16) + '...', 'accent');
+      const patchedBytes = patchFirmware(firmwareBytes);
+      log('writing ' + formatBytes(patchedBytes.length) + ' to 0x' + address.toString(16) + '...', 'accent');
 
       try {
         await esploader.writeFlash({
-          fileArray: [{ data: firmwareBytes, address }],
+          fileArray: [{ data: patchedBytes, address }],
           flashMode,
           flashFreq:  '40m',
           flashSize:  '4MB',
