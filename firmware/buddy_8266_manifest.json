@@ -1,0 +1,10 @@
+{
+  "name": "buddy-firmware-8266",
+  "version": "1.0.0",
+  "chip": "ESP8266",
+  "board": "NodeMCU 1.0 / Generic ESP8266",
+  "flashAddress": "0x0",
+  "flashMode": "dio",
+  "source": "buddy_8266_firmware.ino",
+  "description": "Buddy ESP8266 v1.0 — motor control over WebSocket (no camera/audio)"
+}
