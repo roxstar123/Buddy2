@@ -107,7 +107,8 @@ function connect() {
   el.connectBtn.disabled = true;
   el.connectBtn.querySelector('span').textContent = 'connecting...';
 
-  ws = new WebSocket(`ws://${location.host}/ws?id=${id}&role=client`);
+  const wsProto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  ws = new WebSocket(`${wsProto}//${location.host}/ws?id=${id}&role=client`);
   ws.binaryType = 'arraybuffer';
 
   ws.onopen = () => {
