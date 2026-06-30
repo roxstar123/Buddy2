@@ -266,7 +266,7 @@ void initMic() {
   mc.dma_buf_len          = 256;
   mc.use_apll             = true;
 
-  i2s_pin_config_t mp = {I2S_MIC_SCK, MIC_WS, I2S_PIN_NO_CHANGE, MIC_SD};
+  i2s_pin_config_t mp = {MIC_SCK, MIC_WS, I2S_PIN_NO_CHANGE, MIC_SD};
 
   if (i2s_driver_install(MIC_I2S, &mc, 0, NULL) != ESP_OK ||
       i2s_set_pin(MIC_I2S, &mp)                 != ESP_OK) {
