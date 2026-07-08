@@ -188,23 +188,47 @@ function hideCamera() {
   el.camCanvas.style.display = 'none';
 }
 
+// Camera rendering: decode incoming JPEG into an ImageBitmap, then draw it on
+// the next animation frame.  Keeping only the latest pending bitmap means the
+// display never falls further behind than one frame — stale bitmaps are closed
+// immediately rather than queued up, which was the main source of visible lag.
+
+let _pendingBitmap = null;
+let _rafPending    = false;
+
+function _rafDraw() {
+  _rafPending = false;
+  const bitmap = _pendingBitmap;
+  _pendingBitmap = null;
+  if (!bitmap) return;
+
+  const canvas = el.camCanvas;
+  const ctx    = canvas.getContext('2d');
+
+  if (canvas.width !== bitmap.width || canvas.height !== bitmap.height) {
+    canvas.width  = bitmap.width;
+    canvas.height = bitmap.height;
+  }
+
+  ctx.drawImage(bitmap, 0, 0);
+  bitmap.close();
+}
+
 function renderFrame(arrayBuffer) {
-  // Strip the 0x01 type byte and render the JPEG
   const jpegBytes = arrayBuffer.slice(1);
   const blob = new Blob([jpegBytes], { type: 'image/jpeg' });
 
   createImageBitmap(blob).then(bitmap => {
-    const canvas = el.camCanvas;
-    const ctx    = canvas.getContext('2d');
-
-    // Match canvas resolution to the received frame
-    if (canvas.width !== bitmap.width || canvas.height !== bitmap.height) {
-      canvas.width  = bitmap.width;
-      canvas.height = bitmap.height;
+    // Drop previous pending bitmap so we always show the freshest frame
+    if (_pendingBitmap) {
+      _pendingBitmap.close();
     }
+    _pendingBitmap = bitmap;
 
-    ctx.drawImage(bitmap, 0, 0);
-    bitmap.close();
+    if (!_rafPending) {
+      _rafPending = true;
+      requestAnimationFrame(_rafDraw);
+    }
   }).catch(() => {
     // Silently drop malformed frames
   });

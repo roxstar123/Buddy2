@@ -4,8 +4,10 @@
  * Target board : Seeed Studio XIAO ESP32S3 Sense
  *
  * Required libraries (Tools → Manage Libraries):
- *   WebSockets  by Markus Sattler  (>= 2.4.0)
- *   ArduinoJson by Benoit Blanchon  (>= 6.x)
+ *   WebSockets              by Markus Sattler   (>= 2.4.0)
+ *   ArduinoJson             by Benoit Blanchon   (>= 6.x)
+ *   Adafruit PWM Servo Driver by Adafruit        (>= 2.4.0)
+ *   Adafruit BusIO          by Adafruit          (>= 1.14.0)
  *
  * Board package : esp32 by Espressif (>= 2.0.14)
  * Board select  : XIAO_ESP32S3  (or "Seeed Studio XIAO ESP32S3")
@@ -16,8 +18,14 @@
  *   Mic     PDM     — onboard, CLK=GPIO42  DATA=GPIO41
  *
  * External wiring needed:
+ *   PCA9685 servo driver  → SDA=D4(GPIO5)  SCL=D5(GPIO6)  VCC=3.3V  GND=GND
+ *     Servo 0 → PCA channel 0
+ *     Servo 1 → PCA channel 1
+ *     Servo 2 → PCA channel 2
  *   MAX98357A speaker amp → BCLK=D8(GPIO7)  LRC=D7(GPIO44)  DIN=D6(GPIO43)
- *   Motor driver (L298N)  → see MOTOR_* defines below
+ *
+ * Servo command (JSON over WebSocket):
+ *   { "type": "servo", "ch": 0, "angle": 90 }   — ch: 0-2, angle: 0-180
  *
  * Config block is patched by the Buddy flash tool before writing.
  * ─────────────────────────────────────────────────────────────────────────────
@@ -30,6 +38,8 @@
 #include "driver/i2s.h"
 #include "soc/soc.h"
 #include "soc/rtc_cntl_reg.h"
+#include <Wire.h>
+#include <Adafruit_PWMServoDriver.h>
 
 // ─── Config block ─────────────────────────────────────────────────────────────
 // DO NOT reorder fields. Flash tool patches at fixed offsets from magic bytes.
@@ -75,12 +85,18 @@ struct __attribute__((packed)) BuddyConfig {
 #define SPK_DIN     43         // D6
 #define SPK_RATE    16000
 
-// ─── Motor driver ─────────────────────────────────────────────────────────────
-// Wire to an L298N, DRV8833, or similar. Change pins to match your wiring.
-#define MTR_A_FWD    1         // D0
-#define MTR_A_BWD    2         // D1
-#define MTR_B_FWD    3         // D2
-#define MTR_B_BWD    4         // D3
+// ─── PCA9685 servo driver ─────────────────────────────────────────────────────
+// I2C: SDA=D4(GPIO5), SCL=D5(GPIO6) — default XIAO ESP32S3 I2C pins.
+// PCA9685 default I2C address is 0x40 (all address pins tied low).
+// Pulse range calibrated for standard 50Hz hobby servos:
+//   SERVO_MIN (~500 µs) = 0°,  SERVO_MAX (~2500 µs) = 180°
+#define SERVO_FREQ    50
+#define SERVO_MIN    150    // PCA9685 tick count for 0°  (~500 µs)
+#define SERVO_MAX    600    // PCA9685 tick count for 180° (~2500 µs)
+#define SERVO_CENTER 375    // tick count for 90°
+#define NUM_SERVOS     3    // channels 0, 1, 2
+
+Adafruit_PWMServoDriver pca = Adafruit_PWMServoDriver(0x40);
 
 // ─── Frame type bytes ─────────────────────────────────────────────────────────
 #define TYPE_VIDEO  0x01
@@ -90,16 +106,13 @@ struct __attribute__((packed)) BuddyConfig {
 WebSocketsClient ws;
 volatile bool wsLive     = false;
 volatile bool peerOnline = false;
-
-volatile bool wsLive     = false;
-volatile bool peerOnline = false;
 bool camReady = false;
 bool micReady = false;
 bool spkReady = false;
 
 struct Frame { uint8_t* buf; size_t len; };
 QueueHandle_t txQueue;
-#define TX_QUEUE_DEPTH 3
+#define TX_QUEUE_DEPTH 2   // keep small to minimise frame-buffer lag
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Helpers
@@ -112,27 +125,19 @@ static bool queueFrame(uint8_t* buf, size_t len) {
   return false;
 }
 
-static void stopMotors() {
-  digitalWrite(MTR_A_FWD, LOW); digitalWrite(MTR_A_BWD, LOW);
-  digitalWrite(MTR_B_FWD, LOW); digitalWrite(MTR_B_BWD, LOW);
+// angle 0–180 → PCA9685 tick, then write to the given channel.
+static void setServo(uint8_t ch, int angle) {
+  if (ch >= NUM_SERVOS) return;
+  angle = constrain(angle, 0, 180);
+  uint16_t pulse = map(angle, 0, 180, SERVO_MIN, SERVO_MAX);
+  pca.setPWM(ch, 0, pulse);
+  Serial.printf("[srv] ch%u → %d°\n", ch, angle);
 }
 
-static void driveMotors(const char* dir) {
-  stopMotors();
-  if (strcmp(dir, "fwd") == 0) {
-    digitalWrite(MTR_A_FWD, HIGH);
-    digitalWrite(MTR_B_FWD, HIGH);
-  } else if (strcmp(dir, "back") == 0) {
-    digitalWrite(MTR_A_BWD, HIGH);
-    digitalWrite(MTR_B_BWD, HIGH);
-  } else if (strcmp(dir, "left") == 0) {
-    digitalWrite(MTR_A_BWD, HIGH);
-    digitalWrite(MTR_B_FWD, HIGH);
-  } else if (strcmp(dir, "right") == 0) {
-    digitalWrite(MTR_A_FWD, HIGH);
-    digitalWrite(MTR_B_BWD, HIGH);
+static void centerServos() {
+  for (uint8_t i = 0; i < NUM_SERVOS; i++) {
+    pca.setPWM(i, 0, SERVO_CENTER);
   }
-  Serial.printf("[mtr] %s\n", dir);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -148,7 +153,7 @@ void onWsEvent(WStype_t type, uint8_t* payload, size_t len) {
     case WStype_DISCONNECTED:
       wsLive = false;
       peerOnline = false;
-      stopMotors();
+      centerServos();
       Serial.println("[ws]  disconnected");
       break;
 
@@ -163,9 +168,10 @@ void onWsEvent(WStype_t type, uint8_t* payload, size_t len) {
         } else if (strcmp(t, "client_disconnected") == 0) {
           peerOnline = false;
           Serial.println("[ws]  browser offline");
-          stopMotors();
-        } else if (strcmp(t, "cmd") == 0) {
-          driveMotors(doc["dir"] | "stop");
+          centerServos();
+        } else if (strcmp(t, "servo") == 0) {
+          // { "type": "servo", "ch": 0, "angle": 90 }
+          setServo((uint8_t)(doc["ch"] | 0), (int)(doc["angle"] | 90));
         }
         break;
       }
@@ -185,7 +191,7 @@ void onWsEvent(WStype_t type, uint8_t* payload, size_t len) {
 // Camera task (Core 0)
 // ─────────────────────────────────────────────────────────────────────────────
 void cameraTask(void*) {
-  const TickType_t interval = pdMS_TO_TICKS(66);  // ~15 fps
+  const TickType_t interval = pdMS_TO_TICKS(50);  // ~20 fps — affordable at QVGA
   TickType_t wake = xTaskGetTickCount();
 
   for (;;) {
@@ -256,10 +262,10 @@ void initCamera() {
   c.pin_reset    = RESET_GPIO_NUM;
   c.xclk_freq_hz = 20000000;
   c.pixel_format = PIXFORMAT_JPEG;
-  c.frame_size   = FRAMESIZE_VGA;   // 640×480 — try FRAMESIZE_SVGA for more detail
-  c.jpeg_quality = 12;
-  c.fb_count     = 2;
-  c.fb_location  = CAMERA_FB_IN_PSRAM;  // use the 8MB PSRAM for frame buffers
+  c.frame_size   = FRAMESIZE_QVGA;  // 320×240 — smaller frames cut WS latency significantly
+  c.jpeg_quality = 20;              // 0-63, higher = more compression/smaller file
+  c.fb_count     = 3;               // 3 buffers + GRAB_LATEST keeps pipeline non-blocking
+  c.fb_location  = CAMERA_FB_IN_PSRAM;
   c.grab_mode    = CAMERA_GRAB_LATEST;
 
   if (esp_camera_init(&c) != ESP_OK) {
@@ -335,13 +341,14 @@ void initSpeaker() {
   Serial.println("[spk] ready");
 }
 
-void initMotors() {
-  pinMode(MTR_A_FWD, OUTPUT);
-  pinMode(MTR_A_BWD, OUTPUT);
-  pinMode(MTR_B_FWD, OUTPUT);
-  pinMode(MTR_B_BWD, OUTPUT);
-  stopMotors();
-  Serial.println("[mtr] ready");
+void initServos() {
+  Wire.begin();                       // SDA=GPIO5, SCL=GPIO6 (XIAO defaults)
+  pca.begin();
+  pca.setOscillatorFrequency(27000000);  // tune to actual PCA9685 oscillator (±10%)
+  pca.setPWMFreq(SERVO_FREQ);
+  delay(10);
+  centerServos();
+  Serial.println("[srv] PCA9685 ready — 3 servos centred");
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -365,7 +372,7 @@ void setup() {
   initCamera();
   initMic();
   initSpeaker();
-  initMotors();
+  initServos();
 
   // WiFi
   Serial.printf("[wifi] connecting to \"%s\"\n", cfg.ssid);
