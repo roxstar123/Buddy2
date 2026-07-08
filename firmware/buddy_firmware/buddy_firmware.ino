@@ -47,8 +47,8 @@
 
 struct __attribute__((packed)) BuddyConfig {
   uint8_t magic[8] = { 0xBD, 0xBD, 0xBD, 0xBD, 0x42, 0x55, 0x44, 0x59 };
-  char ssid[32] = "Home2018";
-  char pass[64] = "LBGS2018";
+  char ssid[32] = "Hack Club";
+  char pass[64] = "bettertobeapiratethanjointhenavy";
   char host[40] = "buddy-production-948c.up.railway.app";
   uint32_t port = 443;
   char id[16] = "BDY-00001";
@@ -80,11 +80,7 @@ struct __attribute__((packed)) BuddyConfig {
 #define SPK_DIN     12         // GPIO12 — must be LOW at boot (keep amp DIN floating/low until after init)
 #define SPK_RATE    16000
 
-// ─── PCA9685 servo driver ─────────────────────────────────────────────────────
-// I2C: SDA=D4(GPIO5), SCL=D5(GPIO6) — default XIAO ESP32S3 I2C pins.
-// PCA9685 default I2C address is 0x40 (all address pins tied low).
-// Pulse range calibrated for standard 50Hz hobby servos:
-//   SERVO_MIN (~500 µs) = 0°,  SERVO_MAX (~2500 µs) = 180°
+
 #define SERVO_FREQ    50
 #define SERVO_MIN    150    // PCA9685 tick count for 0°  (~500 µs)
 #define SERVO_MAX    600    // PCA9685 tick count for 180° (~2500 µs)
@@ -102,7 +98,6 @@ WebSocketsClient ws;
 volatile bool wsLive     = false;
 volatile bool peerOnline = false;
 bool camReady = false;
-bool micReady = false;
 bool spkReady = false;
 
 struct Frame { uint8_t* buf; size_t len; };
@@ -207,36 +202,6 @@ void cameraTask(void*) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Mic task (Core 1)
-// ─────────────────────────────────────────────────────────────────────────────
-void micTask(void*) {
-  // PDM on XIAO ESP32S3 reads directly as 16-bit PCM — no shift needed
-  const int    nSamples = MIC_RATE * MIC_MS / 1000;
-  const size_t pcmBytes = nSamples * sizeof(int16_t);
-
-  uint8_t* buf = (uint8_t*)malloc(1 + pcmBytes);
-  if (!buf) { Serial.println("[mic] malloc fail"); vTaskDelete(NULL); }
-  buf[0] = TYPE_AUDIO;
-
-  for (;;) {
-    if (!micReady) {
-      vTaskDelay(pdMS_TO_TICKS(1000));
-      continue;
-    }
-    size_t got = 0;
-    i2s_read(MIC_I2S, buf + 1, pcmBytes, &got, pdMS_TO_TICKS(200));
-    if (got > 0 && peerOnline) {
-      uint8_t* frame = (uint8_t*)malloc(1 + got);
-      if (frame) {
-        frame[0] = TYPE_AUDIO;
-        memcpy(frame + 1, buf + 1, got);
-        queueFrame(frame, 1 + got);
-      }
-    }
-  }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
 // Hardware init
 // ─────────────────────────────────────────────────────────────────────────────
 void initCamera() {
@@ -273,36 +238,6 @@ void initCamera() {
   s->set_vflip(s, 0);    s->set_hmirror(s, 0);
   camReady = true;
   Serial.println("[cam] ready");
-}
-
-void initMic() {
-  // PDM mode — onboard microphone on XIAO ESP32S3 Sense
-  i2s_config_t mc = {};
-  mc.mode                 = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_RX | I2S_MODE_PDM);
-  mc.sample_rate          = MIC_RATE;
-  mc.bits_per_sample      = I2S_BITS_PER_SAMPLE_16BIT;
-  mc.channel_format       = I2S_CHANNEL_FMT_ONLY_LEFT;
-  mc.communication_format = I2S_COMM_FORMAT_STAND_PCM_SHORT;
-  mc.intr_alloc_flags     = ESP_INTR_FLAG_LEVEL1;
-  mc.dma_buf_count        = 4;
-  mc.dma_buf_len          = 256;
-  mc.use_apll             = false;  // PDM doesn't use APLL
-
-  // For PDM: ws_io_num = CLK, data_in_num = DATA
-  i2s_pin_config_t mp = {
-    .bck_io_num   = I2S_PIN_NO_CHANGE,
-    .ws_io_num    = MIC_CLK,
-    .data_out_num = I2S_PIN_NO_CHANGE,
-    .data_in_num  = MIC_DATA
-  };
-
-  if (i2s_driver_install(MIC_I2S, &mc, 0, NULL) != ESP_OK || i2s_set_pin(MIC_I2S, &mp) != ESP_OK) {
-    Serial.println("[mic] init FAILED — audio RX disabled");
-    return;
-  }
-  i2s_zero_dma_buffer(MIC_I2S);
-  micReady = true;
-  Serial.println("[mic] ready");
 }
 
 void initSpeaker() {
@@ -365,7 +300,6 @@ void setup() {
   txQueue = xQueueCreate(TX_QUEUE_DEPTH, sizeof(Frame));
 
   initCamera();
-  initMic();
   initSpeaker();
   initServos();
 
@@ -397,7 +331,6 @@ void setup() {
   ws.enableHeartbeat(15000, 3000, 2);
 
   xTaskCreatePinnedToCore(cameraTask, "cam", 8192, NULL, 2, NULL, 0);
-  xTaskCreatePinnedToCore(micTask, "mic", 4096, NULL, 1, NULL, 1);
 
   Serial.println("[buddy] running");
 }
