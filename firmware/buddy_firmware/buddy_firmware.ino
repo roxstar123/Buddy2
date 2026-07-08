@@ -18,7 +18,7 @@
  *   Flash LED       — GPIO4 (HIGH = on, avoid using as GPIO while camera runs)
  *
  * External wiring needed:
- *   PCA9685 servo driver  → SDA=GPIO14  SCL=GPIO15  VCC=3.3V  GND=GND
+ *   PCA9685 servo driver  → SDA=GPIO14  SCL=GPIO13  VCC=3.3V  GND=GND
  *     Servo 0 → PCA channel 0
  *     Servo 1 → PCA channel 1
  *     Servo 2 → PCA channel 2
@@ -80,7 +80,11 @@ struct __attribute__((packed)) BuddyConfig {
 #define SPK_DIN     12         // GPIO12 — must be LOW at boot (keep amp DIN floating/low until after init)
 #define SPK_RATE    16000
 
-
+// ─── PCA9685 servo driver ─────────────────────────────────────────────────────
+// I2C: SDA=GPIO14, SCL=GPIO13 — both broken out on ESP32-CAM header, no conflicts.
+// PCA9685 default I2C address is 0x40 (all address pins tied low).
+// Pulse range calibrated for standard 50Hz hobby servos:
+//   SERVO_MIN (~500 µs) = 0°,  SERVO_MAX (~2500 µs) = 180°
 #define SERVO_FREQ    50
 #define SERVO_MIN    150    // PCA9685 tick count for 0°  (~500 µs)
 #define SERVO_MAX    600    // PCA9685 tick count for 180° (~2500 µs)
@@ -272,7 +276,7 @@ void initSpeaker() {
 }
 
 void initServos() {
-  Wire.begin();                       // SDA=GPIO5, SCL=GPIO6 (XIAO defaults)
+  Wire.begin(14, 13);                 // SDA=GPIO14, SCL=GPIO13 (ESP32-CAM safe pins)
   pca.begin();
   pca.setOscillatorFrequency(27000000);  // tune to actual PCA9685 oscillator (±10%)
   pca.setPWMFreq(SERVO_FREQ);
@@ -331,6 +335,7 @@ void setup() {
   ws.enableHeartbeat(15000, 3000, 2);
 
   xTaskCreatePinnedToCore(cameraTask, "cam", 8192, NULL, 2, NULL, 0);
+  // micTask omitted — ESP32-CAM has no onboard microphone
 
   Serial.println("[buddy] running");
 }
