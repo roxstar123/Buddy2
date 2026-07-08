@@ -18,7 +18,7 @@
  *   Flash LED       — GPIO4 (HIGH = on, avoid using as GPIO while camera runs)
  *
  * External wiring needed:
- *   PCA9685 servo driver  → SDA=GPIO14  SCL=GPIO15  VCC=3.3V  GND=GND
+ *   PCA9685 servo driver  → SDA=GPIO14  SCL=GPIO13  VCC=3.3V  GND=GND
  *     Servo 0 → PCA channel 0
  *     Servo 1 → PCA channel 1
  *     Servo 2 → PCA channel 2
@@ -81,7 +81,7 @@ struct __attribute__((packed)) BuddyConfig {
 #define SPK_RATE    16000
 
 // ─── PCA9685 servo driver ─────────────────────────────────────────────────────
-// I2C: SDA=GPIO14, SCL=GPIO15 — safest free pins on ESP32-CAM after camera.
+// I2C: SDA=GPIO14, SCL=GPIO13 — both broken out on ESP32-CAM header, no conflicts.
 // PCA9685 default I2C address is 0x40 (all address pins tied low).
 // Pulse range calibrated for standard 50Hz hobby servos:
 //   SERVO_MIN (~500 µs) = 0°,  SERVO_MAX (~2500 µs) = 180°
@@ -337,7 +337,7 @@ void initSpeaker() {
 }
 
 void initServos() {
-  Wire.begin(14, 15);                 // SDA=GPIO14, SCL=GPIO15 (ESP32-CAM safe pins)
+  Wire.begin(14, 13);                 // SDA=GPIO14, SCL=GPIO13 (ESP32-CAM safe pins)
   pca.begin();
   pca.setOscillatorFrequency(27000000);  // tune to actual PCA9685 oscillator (±10%)
   pca.setPWMFreq(SERVO_FREQ);
