@@ -654,21 +654,6 @@
       letter-spacing: 0.02em;
     }
 
-    .section-divider {
-      margin: 36px 0 24px;
-      padding-top: 24px;
-      border-top: 1px solid var(--border-dim);
-    }
-
-    .section-title {
-      font-family: var(--mono);
-      font-size: 12px;
-      letter-spacing: 0.1em;
-      text-transform: uppercase;
-      color: var(--text);
-      margin-bottom: 4px;
-    }
-
     /* ─── RESPONSIVE ─────────────────────────────────────────── */
 
     @media (max-width: 860px) {
@@ -915,12 +900,6 @@
           <button class="log-clear-btn" id="log-clear">clear</button>
         </div>
         <textarea id="flash-log" readonly spellcheck="false"></textarea>
-      </div>
-
-      <!-- ─── Reconfiguring without a re-flash ────────────────────────────────── -->
-      <div class="section-divider">
-        <div class="section-title">changing wifi later (no re-flash needed)</div>
-        <span class="prereq-text">A buddy tries its saved WiFi network first (retrying generously, so a slow router isn't mistaken for a real failure). If it genuinely can't connect — or you tap <strong>reset wifi</strong> on its live dashboard — it broadcasts its own open network named <strong>Buddy-Setup-BDY-XXXXX</strong>. Connect your phone or laptop's WiFi to that network; a setup page hosted directly on the buddy opens automatically (or browse to <code style="font-family:var(--mono);font-size:10px;color:var(--accent)">http://192.168.4.1</code>). Enter your WiFi details there and it reboots straight onto your network — no cable, no re-flash.</span>
       </div>
 
     </main>

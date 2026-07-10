@@ -23,7 +23,6 @@ const el = {
   micToggle:      $('mic-toggle'),
   speakerToggle:  $('speaker-toggle'),
   speakBtn:       $('speak-btn'),
-  resetWifiBtn:   $('reset-wifi-btn'),
 };
 
 // ── State ─────────────────────────────────────────────────────────────────────
@@ -367,23 +366,17 @@ function releaseDpad() {
 }
 
 // D-pad button events
+// touchstart/touchend call preventDefault() so the browser doesn't also fire
+// synthetic mousedown/mouseup ~300ms after the touch — otherwise that ghost
+// mousedown re-triggers pressDpad right after release sent "stop".
 document.querySelectorAll('.d-btn[data-dir]').forEach(btn => {
   const dir = btn.dataset.dir;
   btn.addEventListener('mousedown',   () => pressDpad(dir));
-  btn.addEventListener('touchstart',  () => pressDpad(dir), { passive: true });
+  btn.addEventListener('touchstart',  e => { e.preventDefault(); pressDpad(dir); });
   btn.addEventListener('mouseup',     releaseDpad);
   btn.addEventListener('mouseleave',  releaseDpad);
-  btn.addEventListener('touchend',    releaseDpad);
-  btn.addEventListener('touchcancel', releaseDpad);
-});
-
-// Reset WiFi — tells the buddy to drop its saved network and broadcast its
-// own setup hotspot ("Buddy-Setup-...") on reboot. Connect to that WiFi
-// network and a setup page hosted on the buddy itself will open.
-el.resetWifiBtn.addEventListener('click', () => {
-  if (!ws || ws.readyState !== WebSocket.OPEN) return;
-  if (!confirm('This will disconnect the buddy from its current WiFi and restart it into setup-hotspot mode. Continue?')) return;
-  ws.send(JSON.stringify({ type: 'reset_config' }));
+  btn.addEventListener('touchend',    e => { e.preventDefault(); releaseDpad(); });
+  btn.addEventListener('touchcancel', e => { e.preventDefault(); releaseDpad(); });
 });
 
 // Keyboard support

@@ -19,8 +19,8 @@
  *
  * External wiring needed:
  *   PCA9685 servo driver  → SDA=GPIO14  SCL=GPIO13  VCC=3.3V  GND=GND
- *     3 continuous-rotation wheel servos, tangent to chassis center,
- *     positioned at 0°/120°/240° (clockwise from front, top-down view):
+ *     3 continuous-rotation wheel servos (pots removed), tangent to chassis
+ *     center, positioned at 0°/120°/240° (clockwise from front, top-down view):
  *       Servo 0 → PCA channel 0  (front, 0°)
  *       Servo 1 → PCA channel 1  (120°)
  *       Servo 2 → PCA channel 2  (240°)
@@ -30,31 +30,13 @@
  * Commands (JSON over WebSocket):
  *   { "type": "cmd",   "dir": "fwd"|"back"|"left"|"right"|"stop" }  — holonomic drive
  *   { "type": "servo", "ch": 0, "angle": 90 }                       — raw per-wheel override, ch: 0-2, angle: 0-180
- *   { "type": "reset_config" }                                      — clear saved config, re-enter setup hotspot on reboot
  *
- * Config block is patched by the Buddy flash tool before writing (factory default,
- * ssid = "Hack Club"). Can be overridden later at runtime via on-device WiFi
- * setup, saved to NVS flash:
- *   - On boot, WiFi connect is attempted with the current config (flash default,
- *     or NVS override if one was saved). connectWifi() retries generously
- *     (3 rounds x 20s, with a fresh WiFi.begin() each round) before giving up,
- *     so a slow router/mesh handshake doesn't get misread as "can't connect."
- *   - Only if that genuinely fails — or a reset was explicitly requested (the
- *     dashboard's "reset wifi" button, or { "type": "reset_config" }) — does
- *     the device broadcast its own open WiFi hotspot named "Buddy-Setup-<id>".
- *     Connect a phone/laptop to that network — a captive portal setup page
- *     (served directly from the ESP32, no internet needed) opens automatically,
- *     or browse to http://192.168.4.1 manually. Submitting the form saves the
- *     new config to NVS and reboots into normal operation.
- *   - The hotspot is never active at the same time as the camera/WiFi-station/
- *     WebSocket — it's a one-shot setup phase, not a background service.
+ * Config block is patched by the Buddy flash tool before writing.
  * ─────────────────────────────────────────────────────────────────────────────
  */
 
 #include "esp_camera.h"
 #include <WiFi.h>
-#include <WebServer.h>
-#include <DNSServer.h>
 #include <WebSocketsClient.h>
 #include <ArduinoJson.h>
 #include "driver/i2s.h"
@@ -62,7 +44,6 @@
 #include "soc/rtc_cntl_reg.h"
 #include <Wire.h>
 #include <Adafruit_PWMServoDriver.h>
-#include <Preferences.h>
 
 // ─── Config block ─────────────────────────────────────────────────────────────
 // DO NOT reorder fields. Flash tool patches at fixed offsets from magic bytes.
@@ -75,12 +56,6 @@ struct __attribute__((packed)) BuddyConfig {
   uint32_t port = 443;
   char id[16] = "BDY-00001";
 } cfg;
-
-// ─── On-device WiFi setup (captive portal) ─────────────────────────────────────
-Preferences prefs;
-WebServer setupServer(80);
-DNSServer setupDns;
-volatile bool provisionSaved = false;
 
 // ─── Camera pins (AI Thinker ESP32-CAM / OV2640) ─────────────────────────────
 #define PWDN_GPIO_NUM     32
@@ -116,7 +91,6 @@ volatile bool provisionSaved = false;
 #define SERVO_FREQ    50
 #define SERVO_MIN    150    // PCA9685 tick count for 0°  (~500 µs)
 #define SERVO_MAX    600    // PCA9685 tick count for 180° (~2500 µs)
-#define SERVO_CENTER 375    // tick count for 90°
 #define NUM_SERVOS     3    // channels 0, 1, 2
 
 Adafruit_PWMServoDriver pca = Adafruit_PWMServoDriver(0x40);
@@ -156,10 +130,25 @@ static void setServo(uint8_t ch, int angle) {
   Serial.printf("[srv] ch%u → %d°\n", ch, angle);
 }
 
+// Per-channel true "stop" offset from 90°, in degrees. These are pot-removed
+// continuous-rotation conversions — the pot was decoupled from the shaft, not
+// removed from the circuit, so each servo's real neutral point is whatever
+// fixed position that pot was left at, not necessarily exactly 90°. Calibrate
+// per wheel: send { "type": "servo", "ch": i, "angle": 90 } and nudge the
+// angle up/down until that wheel truly stops creeping, then set the offset
+// here (measured_stop_angle - 90).
+static const int SERVO_TRIM[NUM_SERVOS] = { 0, 0, 0 };
+
+static void centerServos() {
+  for (uint8_t i = 0; i < NUM_SERVOS; i++) {
+    setServo(i, 90 + SERVO_TRIM[i]);
+  }
+}
+
 // ─── Holonomic drive mixing ────────────────────────────────────────────────────
 // 3 continuous-rotation wheel servos, tangent to the chassis center, positioned
-// at 0° / 120° / 240° (clockwise from front, top-down view). 90° = stop.
-#define DRIVE_DEG 60   // max deflection from 90° (center) at full commanded speed
+// at 0° / 120° / 240° (clockwise from front, top-down view). 90°+trim = stop.
+#define DRIVE_DEG 60   // max deflection from center at full commanded speed
 
 // Tangential drive-direction unit vector per wheel, in (forward, right) frame —
 // i.e. -sin(pos), cos(pos) for pos = 0°, 120°, 240°.
@@ -169,7 +158,7 @@ static const float WHEEL_DY[NUM_SERVOS] = {  1.0f,      -0.5f,       -0.5f };
 static void driveServos(float vx, float vy) {
   for (uint8_t i = 0; i < NUM_SERVOS; i++) {
     float speed = WHEEL_DX[i] * vx + WHEEL_DY[i] * vy;  // -1..1
-    setServo(i, 90 + (int)(speed * DRIVE_DEG));
+    setServo(i, 90 + SERVO_TRIM[i] + (int)(speed * DRIVE_DEG));
   }
 }
 
@@ -179,12 +168,6 @@ static void driveCmd(const char* dir) {
   else if (strcmp(dir, "left") == 0)   driveServos( 0, -1);
   else if (strcmp(dir, "right") == 0)  driveServos( 0,  1);
   else                                 driveServos( 0,  0);  // stop / unknown
-}
-
-static void centerServos() {
-  for (uint8_t i = 0; i < NUM_SERVOS; i++) {
-    pca.setPWM(i, 0, SERVO_CENTER);
-  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -222,10 +205,6 @@ void onWsEvent(WStype_t type, uint8_t* payload, size_t len) {
         } else if (strcmp(t, "cmd") == 0) {
           // { "type": "cmd", "dir": "fwd"|"back"|"left"|"right"|"stop" }
           driveCmd(doc["dir"] | "stop");
-        } else if (strcmp(t, "reset_config") == 0) {
-          Serial.println("[cfg] reset requested — will enter setup hotspot on reboot");
-          prefs.putBool("force_setup", true);
-          ESP.restart();
         }
         break;
       }
@@ -346,148 +325,6 @@ void initServos() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Config persistence (NVS) + on-device WiFi setup (captive portal)
-// ─────────────────────────────────────────────────────────────────────────────
-
-static void copyField(char* dst, size_t dstSize, const String& src) {
-  strncpy(dst, src.c_str(), dstSize - 1);
-  dst[dstSize - 1] = 0;
-}
-
-// Overlays cfg with a previously-saved NVS config, if one exists. Otherwise
-// cfg keeps the flash-patched factory defaults untouched.
-static void loadConfigFromNVS() {
-  if (!prefs.getBool("cfgd", false)) return;
-  copyField(cfg.ssid, sizeof(cfg.ssid), prefs.getString("ssid", cfg.ssid));
-  copyField(cfg.pass, sizeof(cfg.pass), prefs.getString("pass", cfg.pass));
-  copyField(cfg.host, sizeof(cfg.host), prefs.getString("host", cfg.host));
-  cfg.port = prefs.getUInt("port", cfg.port);
-  copyField(cfg.id, sizeof(cfg.id), prefs.getString("id", cfg.id));
-  Serial.println("[cfg] loaded saved override from NVS");
-}
-
-// Tries the saved network for a generous window, with a couple of fresh
-// WiFi.begin() attempts along the way — a single short timeout was too quick
-// to declare failure on a slow router/mesh handshake and falsely fell back
-// to the setup hotspot even though the credentials were fine.
-static bool connectWifi() {
-  Serial.printf("[wifi] connecting to \"%s\"\n", cfg.ssid);
-  WiFi.mode(WIFI_STA);
-  WiFi.setAutoReconnect(true);
-
-  const int ROUNDS = 3;
-  const int WAIT_PER_ROUND = 40;  // x 500ms = 20s per round
-  for (int round = 0; round < ROUNDS; round++) {
-    WiFi.begin(cfg.ssid, cfg.pass);
-    for (int i = 0; i < WAIT_PER_ROUND && WiFi.status() != WL_CONNECTED; i++) {
-      delay(500);
-      Serial.print(".");
-    }
-    if (WiFi.status() == WL_CONNECTED) {
-      Serial.printf("\n[wifi] %s\n", WiFi.localIP().toString().c_str());
-      return true;
-    }
-  }
-  Serial.println("\n[wifi] connect failed");
-  return false;
-}
-
-static void handleSetupRoot() {
-  String idNoPrefix = String(cfg.id);
-  if (idNoPrefix.startsWith("BDY-")) idNoPrefix = idNoPrefix.substring(4);
-
-  String html = String(
-    "<!DOCTYPE html><html><head><meta name='viewport' content='width=device-width,initial-scale=1'>"
-    "<title>Buddy Setup</title><style>"
-    "body{font-family:sans-serif;background:#0b0b0b;color:#ede9e3;padding:24px;max-width:420px;margin:0 auto}"
-    "h1{font-size:20px;margin-bottom:4px}p{color:#857f78;font-size:13px;margin-bottom:20px}"
-    "label{display:block;font-size:12px;color:#857f78;margin:14px 0 4px}"
-    "input{width:100%;box-sizing:border-box;padding:10px;background:#121212;border:1px solid #272727;color:#ede9e3;border-radius:4px;font-size:14px}"
-    "button{width:100%;margin-top:22px;padding:12px;background:#c4973f;color:#0b0b0b;border:none;border-radius:4px;font-size:14px;font-weight:600}"
-    "</style></head><body>"
-    "<h1>Buddy setup</h1>"
-    "<p>Connect this buddy to your WiFi network.</p>"
-    "<form method='POST' action='/save'>"
-    "<label>WiFi network (SSID)</label><input name='ssid' required maxlength='31' autocomplete='off'>"
-    "<label>WiFi password</label><input name='pass' type='password' maxlength='63' autocomplete='off'>"
-    "<label>Hub server</label><input name='host' maxlength='39' value='") + cfg.host + String("'>"
-    "<label>Hub port</label><input name='port' value='") + cfg.port + String("'>"
-    "<label>Buddy ID</label><input name='id' maxlength='11' value='") + idNoPrefix + String("'>"
-    "<button type='submit'>Save & Connect</button>"
-    "</form></body></html>");
-
-  setupServer.send(200, "text/html", html);
-}
-
-static void handleSetupSave() {
-  String ssid = setupServer.arg("ssid");
-  ssid.trim();
-  if (ssid.length() == 0) {
-    setupServer.send(400, "text/plain", "ssid is required");
-    return;
-  }
-
-  copyField(cfg.ssid, sizeof(cfg.ssid), ssid);
-  copyField(cfg.pass, sizeof(cfg.pass), setupServer.arg("pass"));
-
-  String host = setupServer.arg("host"); host.trim();
-  if (host.length() > 0) copyField(cfg.host, sizeof(cfg.host), host);
-
-  long port = setupServer.arg("port").toInt();
-  if (port > 0) cfg.port = (uint32_t)port;
-
-  String id = setupServer.arg("id"); id.trim(); id.toUpperCase();
-  if (id.length() > 0) {
-    if (!id.startsWith("BDY-")) id = "BDY-" + id;
-    copyField(cfg.id, sizeof(cfg.id), id);
-  }
-
-  prefs.putString("ssid", cfg.ssid);
-  prefs.putString("pass", cfg.pass);
-  prefs.putString("host", cfg.host);
-  prefs.putUInt("port", cfg.port);
-  prefs.putString("id", cfg.id);
-  prefs.putBool("cfgd", true);
-
-  setupServer.send(200, "text/html",
-    "<!DOCTYPE html><html><body style='font-family:sans-serif;background:#0b0b0b;color:#ede9e3;padding:24px'>"
-    "<h1>Saved</h1><p>Restarting and connecting to your WiFi network now.</p></body></html>");
-
-  Serial.println("[setup] config saved — restarting");
-  provisionSaved = true;
-}
-
-// Blocks, running an open WiFi hotspot + captive portal setup page, until a
-// valid config is submitted and saved — then restarts the device. Never runs
-// alongside the camera/WiFi-station/WebSocket.
-static void runApProvisioning() {
-  String apName = String("Buddy-Setup-") + cfg.id;
-  Serial.printf("[setup] starting hotspot \"%s\"\n", apName.c_str());
-  provisionSaved = false;
-
-  WiFi.mode(WIFI_AP);
-  WiFi.softAP(apName.c_str());
-  IPAddress apIP = WiFi.softAPIP();
-  Serial.printf("[setup] hotspot up — connect and browse to http://%s\n", apIP.toString().c_str());
-
-  setupDns.start(53, "*", apIP);  // resolve every hostname to us -> triggers captive-portal auto-open
-  setupServer.on("/", handleSetupRoot);
-  setupServer.on("/save", HTTP_POST, handleSetupSave);
-  setupServer.onNotFound(handleSetupRoot);
-  setupServer.begin();
-
-  while (!provisionSaved) {
-    setupDns.processNextRequest();
-    setupServer.handleClient();
-    delay(2);
-  }
-  delay(500);  // let the "saved" response actually reach the browser first
-  setupServer.close();
-  setupDns.stop();
-  ESP.restart();
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
 // Setup
 // ─────────────────────────────────────────────────────────────────────────────
 void setup() {
@@ -505,24 +342,23 @@ void setup() {
 
   txQueue = xQueueCreate(TX_QUEUE_DEPTH, sizeof(Frame));
 
-  // Config + WiFi — resolved before camera/servo init so a fresh setup-hotspot
-  // session (which always ends in a reboot) doesn't waste time on hardware
-  // that'll just be torn down again.
-  prefs.begin("buddy", false);
-  loadConfigFromNVS();
-
-  bool forceProvision = prefs.getBool("force_setup", false);
-  if (forceProvision) prefs.putBool("force_setup", false);
-
-  // Try the saved/default network (connectWifi() itself retries generously
-  // before giving up). Only if that genuinely fails — or a reset was
-  // explicitly requested — do we fall back to the setup hotspot.
-  bool wifiOk = forceProvision ? false : connectWifi();
-  if (!wifiOk) runApProvisioning();  // blocks; saves config + restarts on success, never returns
-
   initCamera();
   initSpeaker();
   initServos();
+
+  // WiFi
+  Serial.printf("[wifi] connecting to \"%s\"\n", cfg.ssid);
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(cfg.ssid, cfg.pass);
+  WiFi.setAutoReconnect(true);
+  for (int i = 0; i < 40 && WiFi.status() != WL_CONNECTED; i++) {
+    delay(500);
+    Serial.print(".");
+  }
+  if (WiFi.status() == WL_CONNECTED)
+    Serial.printf("\n[wifi] %s\n", WiFi.localIP().toString().c_str());
+  else
+    Serial.println("\n[wifi] timed out — will retry");
 
   // WebSocket — use WSS (port 443) for Railway, plain WS (cfg.port) for local
   String path = String("/ws?id=") + cfg.id + "&role=device";
