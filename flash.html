@@ -654,22 +654,6 @@
       letter-spacing: 0.02em;
     }
 
-    .mini-log {
-      width: 100%;
-      height: 140px;
-      background: var(--bg);
-      border: 1px solid var(--border);
-      color: var(--text-mid);
-      font-family: var(--mono);
-      font-size: 11px;
-      line-height: 1.7;
-      padding: 14px;
-      overflow-y: auto;
-      resize: none;
-      outline: none;
-      letter-spacing: 0.02em;
-    }
-
     .section-divider {
       margin: 36px 0 24px;
       padding-top: 24px;
@@ -933,65 +917,10 @@
         <textarea id="flash-log" readonly spellcheck="false"></textarea>
       </div>
 
-      <!-- ─── Bluetooth reconfiguration (no re-flash needed) ─────────────────── -->
+      <!-- ─── Reconfiguring without a re-flash ────────────────────────────────── -->
       <div class="section-divider">
-        <div class="section-title">reconfigure over bluetooth</div>
-        <span class="prereq-text">Once a buddy is running firmware with Bluetooth setup support, you can change its WiFi network, hub server, or buddy ID here without plugging it in or re-flashing. The device only advertises Bluetooth briefly at boot if it can't connect to its saved WiFi, or after you trigger a reset from the dashboard.</span>
-      </div>
-
-      <div class="device-settings">
-        <div class="device-settings-header">
-          <span class="device-settings-title">bluetooth settings</span>
-          <span class="patch-status" id="ble-conn-status">not connected</span>
-        </div>
-        <div class="device-settings-body">
-
-          <div class="config-field">
-            <div class="config-label">wifi network (ssid)</div>
-            <input class="config-input" id="ble-ssid" type="text" placeholder="MyNetwork" maxlength="31" spellcheck="false" autocomplete="off" />
-          </div>
-
-          <div class="config-field">
-            <div class="config-label">wifi password</div>
-            <div class="pass-wrap">
-              <input class="config-input" id="ble-pass" type="password" placeholder="••••••••" maxlength="63" spellcheck="false" autocomplete="off" />
-              <button class="pass-toggle" id="ble-pass-toggle" type="button">show</button>
-            </div>
-          </div>
-
-          <div class="config-field">
-            <div class="config-label">hub server ip</div>
-            <input class="config-input" id="ble-host" type="text" placeholder="192.168.1.x" maxlength="39" spellcheck="false" autocomplete="off" />
-          </div>
-
-          <div class="config-field">
-            <div class="config-label">hub port</div>
-            <input class="config-input" id="ble-port" type="text" value="3000" maxlength="5" spellcheck="false" />
-          </div>
-
-          <div class="config-field full">
-            <div class="config-label">buddy id</div>
-            <div class="buddy-id-wrap">
-              <span class="buddy-id-prefix">BDY-</span>
-              <input class="config-input" id="ble-id" type="text" placeholder="00001" maxlength="11" spellcheck="false" autocomplete="off" />
-            </div>
-          </div>
-
-        </div>
-      </div>
-
-      <div class="action-row">
-        <button class="btn btn-primary" id="btn-ble-connect">Connect via Bluetooth</button>
-        <button class="btn" id="btn-ble-send" disabled>-> Send Settings</button>
-        <span class="action-status" id="ble-action-status">not connected</span>
-      </div>
-
-      <div class="log-wrap">
-        <div class="log-header">
-          <span class="log-title">bluetooth log</span>
-          <button class="log-clear-btn" id="ble-log-clear">clear</button>
-        </div>
-        <textarea id="ble-log" class="mini-log" readonly spellcheck="false"></textarea>
+        <div class="section-title">changing wifi later (no re-flash needed)</div>
+        <span class="prereq-text">If a buddy can't reach its saved WiFi network on boot — or you tap <strong>reset wifi</strong> on its live dashboard — it broadcasts its own open network named <strong>Buddy-Setup-BDY-XXXXX</strong>. Connect your phone or laptop's WiFi to that network; a setup page hosted directly on the buddy opens automatically (or browse to <code style="font-family:var(--mono);font-size:10px;color:var(--accent)">http://192.168.4.1</code>). Enter your WiFi details there and it reboots straight onto your network — no cable, no re-flash.</span>
       </div>
 
     </main>
@@ -1441,127 +1370,6 @@
       }
     }
 
-    // ── Bluetooth WiFi setup ─────────────────────────────────────────────────
-
-    const BLE_SVC_UUID         = '7a51b900-3e26-4b64-9b8f-1a1f6d6a8e10';
-    const BLE_CFG_CHAR_UUID    = '7a51b901-3e26-4b64-9b8f-1a1f6d6a8e10';
-    const BLE_STATUS_CHAR_UUID = '7a51b902-3e26-4b64-9b8f-1a1f6d6a8e10';
-
-    let bleDevice  = null;
-    let bleCfgChar = null;
-
-    const bleSsid        = document.getElementById('ble-ssid');
-    const blePass        = document.getElementById('ble-pass');
-    const bleHost        = document.getElementById('ble-host');
-    const blePort        = document.getElementById('ble-port');
-    const bleId          = document.getElementById('ble-id');
-    const blePassToggle  = document.getElementById('ble-pass-toggle');
-    const btnBleConnect  = document.getElementById('btn-ble-connect');
-    const btnBleSend     = document.getElementById('btn-ble-send');
-    const bleActionStatus= document.getElementById('ble-action-status');
-    const bleConnStatus  = document.getElementById('ble-conn-status');
-    const bleLogEl       = document.getElementById('ble-log');
-    const bleLogClear    = document.getElementById('ble-log-clear');
-
-    function bleLog(text, color) {
-      const prefix = color === 'accent' ? '> ' : color === 'err' ? '! ' : '  ';
-      bleLogEl.value += prefix + text + '\n';
-      bleLogEl.scrollTop = bleLogEl.scrollHeight;
-    }
-
-    bleLogClear.addEventListener('click', () => { bleLogEl.value = ''; });
-
-    blePassToggle.addEventListener('click', () => {
-      const show = blePass.type === 'password';
-      blePass.type = show ? 'text' : 'password';
-      blePassToggle.textContent = show ? 'hide' : 'show';
-    });
-
-    function setBleStatus(text, isError = false) {
-      bleActionStatus.textContent = text;
-      bleActionStatus.style.color = isError ? 'var(--red)' : 'var(--text-dim)';
-    }
-
-    // Prefill host/port from the same auto-detected values used for USB flashing
-    fetch('/api/ip').then(r => r.json()).then(({ ip, port }) => {
-      if (!bleHost.value) bleHost.value = ip;
-      if (blePort.value === '3000') blePort.value = port;
-    }).catch(() => {});
-
-    btnBleConnect.addEventListener('click', async () => {
-      if (!('bluetooth' in navigator)) {
-        bleLog('Web Bluetooth API not available. Use Chrome or Edge.', 'err');
-        setBleStatus('unsupported browser', true);
-        return;
-      }
-
-      try {
-        bleLog('requesting device (advertised as "Buddy-Setup-...")...', 'accent');
-        bleDevice = await navigator.bluetooth.requestDevice({
-          filters: [{ namePrefix: 'Buddy-Setup-' }],
-          optionalServices: [BLE_SVC_UUID],
-        });
-
-        bleDevice.addEventListener('gattserverdisconnected', () => {
-          bleLog('disconnected.', 'accent');
-          bleConnStatus.textContent = 'not connected';
-          bleCfgChar = null;
-          btnBleSend.disabled = true;
-        });
-
-        bleLog('connecting to ' + bleDevice.name + '...', 'accent');
-        const server  = await bleDevice.gatt.connect();
-        const service = await server.getPrimaryService(BLE_SVC_UUID);
-
-        bleCfgChar = await service.getCharacteristic(BLE_CFG_CHAR_UUID);
-        const statusChar = await service.getCharacteristic(BLE_STATUS_CHAR_UUID);
-
-        await statusChar.startNotifications();
-        statusChar.addEventListener('characteristicvaluechanged', (e) => {
-          const msg = new TextDecoder().decode(e.target.value);
-          bleLog('device: ' + msg, msg.startsWith('error') ? 'err' : 'accent');
-          if (msg.startsWith('saved')) setBleStatus('saved — device is restarting');
-        });
-
-        bleConnStatus.textContent = 'connected: ' + bleDevice.name;
-        setBleStatus('connected — enter settings and send');
-        btnBleSend.disabled = false;
-        bleLog('connected.', 'accent');
-      } catch (err) {
-        if (err.name !== 'NotFoundError') bleLog('connect failed: ' + err.message, 'err');
-        setBleStatus('connect failed', true);
-      }
-    });
-
-    btnBleSend.addEventListener('click', async () => {
-      if (!bleCfgChar) return;
-
-      const payload = {
-        ssid: bleSsid.value.trim(),
-        pass: blePass.value,
-        host: bleHost.value.trim(),
-        port: parseInt(blePort.value.trim()) || 3000,
-        id:   'BDY-' + bleId.value.trim().toUpperCase().replace(/^BDY-/i, ''),
-      };
-
-      if (!payload.ssid) {
-        bleLog('ssid is required.', 'err');
-        setBleStatus('ssid required', true);
-        return;
-      }
-
-      try {
-        const json = JSON.stringify(payload);
-        bleLog('sending settings (' + json.length + ' bytes)...', 'accent');
-        await bleCfgChar.writeValue(new TextEncoder().encode(json));
-        bleLog('sent — waiting for device to confirm and restart...', 'accent');
-        setBleStatus('sent — waiting for confirmation');
-      } catch (err) {
-        bleLog('send failed: ' + err.message, 'err');
-        setBleStatus('send failed', true);
-      }
-    });
-
     // ── Init ──────────────────────────────────────────────────────────────────
 
     if (!('serial' in navigator)) {
@@ -1569,12 +1377,6 @@
       log('this page requires Chrome or Edge 89+.', 'err');
       btnConnect.disabled = true;
       setStatus('unsupported browser', true);
-    }
-
-    if (!('bluetooth' in navigator)) {
-      bleLog('Web Bluetooth API not detected — this page requires Chrome or Edge.', 'err');
-      btnBleConnect.disabled = true;
-      setBleStatus('unsupported browser', true);
     }
 
     updateButtons();

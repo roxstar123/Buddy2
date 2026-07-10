@@ -377,11 +377,12 @@ document.querySelectorAll('.d-btn[data-dir]').forEach(btn => {
   btn.addEventListener('touchcancel', releaseDpad);
 });
 
-// Reset WiFi — tells the buddy to drop its saved network and re-enter
-// Bluetooth setup mode on reboot (see flash.html's Bluetooth panel).
+// Reset WiFi — tells the buddy to drop its saved network and broadcast its
+// own setup hotspot ("Buddy-Setup-...") on reboot. Connect to that WiFi
+// network and a setup page hosted on the buddy itself will open.
 el.resetWifiBtn.addEventListener('click', () => {
   if (!ws || ws.readyState !== WebSocket.OPEN) return;
-  if (!confirm('This will disconnect the buddy from its current WiFi and restart it into Bluetooth setup mode. Continue?')) return;
+  if (!confirm('This will disconnect the buddy from its current WiFi and restart it into setup-hotspot mode. Continue?')) return;
   ws.send(JSON.stringify({ type: 'reset_config' }));
 });
 

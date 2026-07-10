@@ -30,24 +30,26 @@
  * Commands (JSON over WebSocket):
  *   { "type": "cmd",   "dir": "fwd"|"back"|"left"|"right"|"stop" }  — holonomic drive
  *   { "type": "servo", "ch": 0, "angle": 90 }                       — raw per-wheel override, ch: 0-2, angle: 0-180
- *   { "type": "reset_config" }                                      — clear saved config, re-enter BLE setup on reboot
+ *   { "type": "reset_config" }                                      — clear saved config, re-enter setup hotspot on reboot
  *
  * Config block is patched by the Buddy flash tool before writing (factory default).
- * Can be overridden later at runtime via Bluetooth setup, saved to NVS flash:
+ * Can be overridden later at runtime via on-device WiFi setup, saved to NVS flash:
  *   - On boot, WiFi connect is attempted with the current config (flash default,
  *     or NVS override if one was saved). If it fails (or a reset was requested),
- *     the device stops and advertises BLE as "Buddy-Setup-<id>" until a browser
- *     using Web Bluetooth writes a new config, then reboots into normal operation.
- *   - BLE is never active at the same time as the camera/WebSocket — it's a
- *     one-shot setup phase, not a background service.
- *   - GATT service  7a51b900-3e26-4b64-9b8f-1a1f6d6a8e10
- *       config char  7a51b901-...  (write)  JSON: {ssid,pass,host,port,id}
- *       status char  7a51b902-...  (read/notify) plain text progress/result
+ *     the device stops and broadcasts its own open WiFi hotspot named
+ *     "Buddy-Setup-<id>". Connect a phone/laptop to that network — a captive
+ *     portal setup page (served directly from the ESP32, no internet needed)
+ *     opens automatically, or browse to http://192.168.4.1 manually. Submitting
+ *     the form saves the new config to NVS and reboots into normal operation.
+ *   - The hotspot is never active at the same time as the camera/WiFi-station/
+ *     WebSocket — it's a one-shot setup phase, not a background service.
  * ─────────────────────────────────────────────────────────────────────────────
  */
 
 #include "esp_camera.h"
 #include <WiFi.h>
+#include <WebServer.h>
+#include <DNSServer.h>
 #include <WebSocketsClient.h>
 #include <ArduinoJson.h>
 #include "driver/i2s.h"
@@ -56,10 +58,6 @@
 #include <Wire.h>
 #include <Adafruit_PWMServoDriver.h>
 #include <Preferences.h>
-#include <BLEDevice.h>
-#include <BLEServer.h>
-#include <BLEUtils.h>
-#include <BLE2902.h>
 
 // ─── Config block ─────────────────────────────────────────────────────────────
 // DO NOT reorder fields. Flash tool patches at fixed offsets from magic bytes.
@@ -73,14 +71,11 @@ struct __attribute__((packed)) BuddyConfig {
   char id[16] = "BDY-00001";
 } cfg;
 
-// ─── Bluetooth WiFi setup ──────────────────────────────────────────────────────
-#define BLE_SVC_UUID       "7a51b900-3e26-4b64-9b8f-1a1f6d6a8e10"
-#define BLE_CFG_CHAR_UUID  "7a51b901-3e26-4b64-9b8f-1a1f6d6a8e10"
-#define BLE_STATUS_CHAR_UUID "7a51b902-3e26-4b64-9b8f-1a1f6d6a8e10"
-
+// ─── On-device WiFi setup (captive portal) ─────────────────────────────────────
 Preferences prefs;
-volatile bool bleConfigSaved = false;
-BLECharacteristic* g_statusChar = nullptr;
+WebServer setupServer(80);
+DNSServer setupDns;
+volatile bool provisionSaved = false;
 
 // ─── Camera pins (AI Thinker ESP32-CAM / OV2640) ─────────────────────────────
 #define PWDN_GPIO_NUM     32
@@ -223,8 +218,8 @@ void onWsEvent(WStype_t type, uint8_t* payload, size_t len) {
           // { "type": "cmd", "dir": "fwd"|"back"|"left"|"right"|"stop" }
           driveCmd(doc["dir"] | "stop");
         } else if (strcmp(t, "reset_config") == 0) {
-          Serial.println("[cfg] reset requested — will enter BLE setup on reboot");
-          prefs.putBool("force_ble", true);
+          Serial.println("[cfg] reset requested — will enter setup hotspot on reboot");
+          prefs.putBool("force_setup", true);
           ESP.restart();
         }
         break;
@@ -346,7 +341,7 @@ void initServos() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Config persistence (NVS) + Bluetooth WiFi setup
+// Config persistence (NVS) + on-device WiFi setup (captive portal)
 // ─────────────────────────────────────────────────────────────────────────────
 
 static void copyField(char* dst, size_t dstSize, const String& src) {
@@ -383,73 +378,98 @@ static bool connectWifi() {
   return false;
 }
 
-static void notifyStatus(const char* s) {
-  Serial.printf("[ble] %s\n", s);
-  if (g_statusChar) {
-    g_statusChar->setValue(s);
-    g_statusChar->notify();
-  }
+static void handleSetupRoot() {
+  String idNoPrefix = String(cfg.id);
+  if (idNoPrefix.startsWith("BDY-")) idNoPrefix = idNoPrefix.substring(4);
+
+  String html = String(
+    "<!DOCTYPE html><html><head><meta name='viewport' content='width=device-width,initial-scale=1'>"
+    "<title>Buddy Setup</title><style>"
+    "body{font-family:sans-serif;background:#0b0b0b;color:#ede9e3;padding:24px;max-width:420px;margin:0 auto}"
+    "h1{font-size:20px;margin-bottom:4px}p{color:#857f78;font-size:13px;margin-bottom:20px}"
+    "label{display:block;font-size:12px;color:#857f78;margin:14px 0 4px}"
+    "input{width:100%;box-sizing:border-box;padding:10px;background:#121212;border:1px solid #272727;color:#ede9e3;border-radius:4px;font-size:14px}"
+    "button{width:100%;margin-top:22px;padding:12px;background:#c4973f;color:#0b0b0b;border:none;border-radius:4px;font-size:14px;font-weight:600}"
+    "</style></head><body>"
+    "<h1>Buddy setup</h1>"
+    "<p>Connect this buddy to your WiFi network.</p>"
+    "<form method='POST' action='/save'>"
+    "<label>WiFi network (SSID)</label><input name='ssid' required maxlength='31' autocomplete='off'>"
+    "<label>WiFi password</label><input name='pass' type='password' maxlength='63' autocomplete='off'>"
+    "<label>Hub server</label><input name='host' maxlength='39' value='") + cfg.host + String("'>"
+    "<label>Hub port</label><input name='port' value='") + cfg.port + String("'>"
+    "<label>Buddy ID</label><input name='id' maxlength='11' value='") + idNoPrefix + String("'>"
+    "<button type='submit'>Save & Connect</button>"
+    "</form></body></html>");
+
+  setupServer.send(200, "text/html", html);
 }
 
-class ConfigWriteCallback : public BLECharacteristicCallbacks {
-  void onWrite(BLECharacteristic* c) override {
-    StaticJsonDocument<300> doc;
-    if (deserializeJson(doc, c->getValue()) != DeserializationError::Ok) {
-      notifyStatus("error: bad json");
-      return;
-    }
-    const char* ssid = doc["ssid"] | "";
-    if (strlen(ssid) == 0) {
-      notifyStatus("error: ssid required");
-      return;
-    }
-    copyField(cfg.ssid, sizeof(cfg.ssid), String(ssid));
-    copyField(cfg.pass, sizeof(cfg.pass), String(doc["pass"] | (const char*)cfg.pass));
-    copyField(cfg.host, sizeof(cfg.host), String(doc["host"] | (const char*)cfg.host));
-    cfg.port = doc["port"] | cfg.port;
-    copyField(cfg.id, sizeof(cfg.id), String(doc["id"] | (const char*)cfg.id));
-
-    prefs.putString("ssid", cfg.ssid);
-    prefs.putString("pass", cfg.pass);
-    prefs.putString("host", cfg.host);
-    prefs.putUInt("port", cfg.port);
-    prefs.putString("id", cfg.id);
-    prefs.putBool("cfgd", true);
-
-    notifyStatus("saved — restarting");
-    bleConfigSaved = true;
+static void handleSetupSave() {
+  String ssid = setupServer.arg("ssid");
+  ssid.trim();
+  if (ssid.length() == 0) {
+    setupServer.send(400, "text/plain", "ssid is required");
+    return;
   }
-};
 
-// Blocks, advertising BLE, until a valid config is written and saved — then
-// restarts the device. Never runs alongside the camera/WiFi/WebSocket.
-static void runBleProvisioning() {
-  Serial.println("[ble] entering WiFi setup mode");
-  bleConfigSaved = false;
+  copyField(cfg.ssid, sizeof(cfg.ssid), ssid);
+  copyField(cfg.pass, sizeof(cfg.pass), setupServer.arg("pass"));
 
-  BLEDevice::init((String("Buddy-Setup-") + cfg.id).c_str());
-  BLEServer* server   = BLEDevice::createServer();
-  BLEService* service = server->createService(BLE_SVC_UUID);
+  String host = setupServer.arg("host"); host.trim();
+  if (host.length() > 0) copyField(cfg.host, sizeof(cfg.host), host);
 
-  BLECharacteristic* cfgChar = service->createCharacteristic(
-      BLE_CFG_CHAR_UUID, BLECharacteristic::PROPERTY_WRITE);
-  cfgChar->setCallbacks(new ConfigWriteCallback());
+  long port = setupServer.arg("port").toInt();
+  if (port > 0) cfg.port = (uint32_t)port;
 
-  g_statusChar = service->createCharacteristic(
-      BLE_STATUS_CHAR_UUID, BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_NOTIFY);
-  g_statusChar->addDescriptor(new BLE2902());
-  g_statusChar->setValue("waiting");
-
-  service->start();
-  BLEAdvertising* adv = BLEDevice::getAdvertising();
-  adv->addServiceUUID(BLE_SVC_UUID);
-  adv->start();
-
-  Serial.println("[ble] advertising — waiting for WiFi setup");
-  while (!bleConfigSaved) {
-    vTaskDelay(pdMS_TO_TICKS(200));
+  String id = setupServer.arg("id"); id.trim(); id.toUpperCase();
+  if (id.length() > 0) {
+    if (!id.startsWith("BDY-")) id = "BDY-" + id;
+    copyField(cfg.id, sizeof(cfg.id), id);
   }
-  delay(500);  // let the "saved" notify actually go out before we tear down BLE
+
+  prefs.putString("ssid", cfg.ssid);
+  prefs.putString("pass", cfg.pass);
+  prefs.putString("host", cfg.host);
+  prefs.putUInt("port", cfg.port);
+  prefs.putString("id", cfg.id);
+  prefs.putBool("cfgd", true);
+
+  setupServer.send(200, "text/html",
+    "<!DOCTYPE html><html><body style='font-family:sans-serif;background:#0b0b0b;color:#ede9e3;padding:24px'>"
+    "<h1>Saved</h1><p>Restarting and connecting to your WiFi network now.</p></body></html>");
+
+  Serial.println("[setup] config saved — restarting");
+  provisionSaved = true;
+}
+
+// Blocks, running an open WiFi hotspot + captive portal setup page, until a
+// valid config is submitted and saved — then restarts the device. Never runs
+// alongside the camera/WiFi-station/WebSocket.
+static void runApProvisioning() {
+  String apName = String("Buddy-Setup-") + cfg.id;
+  Serial.printf("[setup] starting hotspot \"%s\"\n", apName.c_str());
+  provisionSaved = false;
+
+  WiFi.mode(WIFI_AP);
+  WiFi.softAP(apName.c_str());
+  IPAddress apIP = WiFi.softAPIP();
+  Serial.printf("[setup] hotspot up — connect and browse to http://%s\n", apIP.toString().c_str());
+
+  setupDns.start(53, "*", apIP);  // resolve every hostname to us -> triggers captive-portal auto-open
+  setupServer.on("/", handleSetupRoot);
+  setupServer.on("/save", HTTP_POST, handleSetupSave);
+  setupServer.onNotFound(handleSetupRoot);
+  setupServer.begin();
+
+  while (!provisionSaved) {
+    setupDns.processNextRequest();
+    setupServer.handleClient();
+    delay(2);
+  }
+  delay(500);  // let the "saved" response actually reach the browser first
+  setupServer.close();
+  setupDns.stop();
   ESP.restart();
 }
 
@@ -471,17 +491,17 @@ void setup() {
 
   txQueue = xQueueCreate(TX_QUEUE_DEPTH, sizeof(Frame));
 
-  // Config + WiFi — resolved before camera/servo init so a fresh BLE setup
+  // Config + WiFi — resolved before camera/servo init so a fresh setup-hotspot
   // session (which always ends in a reboot) doesn't waste time on hardware
   // that'll just be torn down again.
   prefs.begin("buddy", false);
   loadConfigFromNVS();
 
-  bool forceProvision = prefs.getBool("force_ble", false);
-  if (forceProvision) prefs.putBool("force_ble", false);
+  bool forceProvision = prefs.getBool("force_setup", false);
+  if (forceProvision) prefs.putBool("force_setup", false);
 
   bool wifiOk = forceProvision ? false : connectWifi();
-  if (!wifiOk) runBleProvisioning();  // blocks; saves config + restarts on success, never returns
+  if (!wifiOk) runApProvisioning();  // blocks; saves config + restarts on success, never returns
 
   initCamera();
   initSpeaker();
