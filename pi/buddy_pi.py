@@ -64,33 +64,46 @@ TYPE_VIDEO = 0x01
 TYPE_AUDIO = 0x02
 
 # ─── PCA9685 servo driver (minimal register-level driver over smbus2) ────────
-# Same calibration as the ESP32 firmware: 50Hz, tick 150 = 0° (~500µs),
-# tick 600 = 180° (~2500µs), oscillator tuned to 27MHz.
 
 SERVO_FREQ = 50
-SERVO_MIN  = 150
-SERVO_MAX  = 600
 NUM_SERVOS = 3
 PCA_ADDR   = 0x40
 PCA_OSC_HZ = 27_000_000
 
-# Per-channel true "stop" offset from 90°, in degrees. The pots on these
-# continuous-rotation conversions were decoupled from the shaft, not removed
-# from the circuit, so each servo's real neutral is wherever its pot was left.
-# Calibrate per wheel: send { "type": "servo", "ch": i, "angle": 90 } and
-# nudge until the wheel stops creeping, then set (measured_stop_angle - 90).
-SERVO_TRIM = [0, 0, 0]
+# ─── Continuous-rotation servo control (pulse width in µs) ────────────────────
+# These servos are pot-decoupled conversions: the electronics still think
+# they're positional, but the pot is frozen, so pulse width maps to *speed*:
+# 1500µs = stop, shorter = spin one way, longer = the other. The speed curve
+# saturates fast — ±FULL_SPEED_US from neutral is already flat-out, and
+# pushing far past that just slams the motor against its own controller
+# (that's the grinding noise). So all commands stay inside a narrow band.
 
-# ─── Holonomic drive mixing ───────────────────────────────────────────────────
-# 3 wheels tangent to chassis center at 0°/120°/240° (clockwise from front,
-# top-down). 90°+trim = stop. Same math as the ESP32 firmware.
+STOP_US       = 1500   # nominal stop pulse
+FULL_SPEED_US = 200    # pulse offset at 100% commanded speed (lower = slower robot)
+DEADBAND      = 0.05   # |speed| below this snaps to the exact stop pulse (no buzzing)
 
-DRIVE_DEG = 60  # max deflection from center at full commanded speed
+# Per-channel stop trim, in µs. Each servo's true stop is wherever its frozen
+# pot happens to sit, not exactly 1500µs. Calibrate per wheel: send
+# { "type": "servo", "ch": i, "angle": 90 } and nudge the angle until that
+# wheel fully stops — each angle step = 2µs, so trim = (stop_angle - 90) * 2.
+STOP_TRIM_US = [0, 0, 0]
 
-# Tangential drive-direction unit vector per wheel, in (forward, right) frame —
-# i.e. -sin(pos), cos(pos) for pos = 0°, 120°, 240°.
-WHEEL_DX = [0.0, -0.8660254, 0.8660254]
-WHEEL_DY = [1.0, -0.5, -0.5]
+# ─── Drive geometry ───────────────────────────────────────────────────────────
+# Three wheels tangent to the chassis circle — TWO IN FRONT, ONE IN BACK
+# (top-down view, positions measured clockwise from straight ahead):
+#
+#     FL ╱     ╲ FR       front-left  at 300°  → PCA channel 0
+#                          front-right at  60°  → PCA channel 1
+#         ───              back        at 180°  → PCA channel 2
+#          B
+#
+# Wheel drive-direction unit vector = (-sin(pos), cos(pos)) in the
+# (forward, right) frame; wheel speed = dot(drive_dir, commanded velocity).
+#   fwd/back   → both front wheels drive (mirrored mounting, so opposite
+#                signs = same direction of travel), back wheel stays still
+#   left/right → back wheel does most of the work, fronts assist
+WHEEL_FWD   = [ 0.8660254, -0.8660254,  0.0]   # FL, FR, B
+WHEEL_RIGHT = [ 0.5,        0.5,       -1.0]
 
 
 class Servos:
@@ -122,28 +135,43 @@ class Servos:
         time.sleep(0.005)
         self.bus.write_byte_data(PCA_ADDR, self._MODE1, 0xA0)         # restart + auto-inc
 
-    def set(self, ch: int, angle: int):
-        """angle 0–180 → PCA9685 tick, then write to the given channel."""
-        if self.bus is None or not (0 <= ch < NUM_SERVOS):
-            return
-        angle = max(0, min(180, angle))
-        pulse = SERVO_MIN + (SERVO_MAX - SERVO_MIN) * angle // 180
+    def _write_us(self, ch: int, us: float):
+        """Pulse width in µs → PCA9685 ticks (4096 ticks per 20ms frame @ 50Hz)."""
+        ticks = round(us * SERVO_FREQ * 4096 / 1_000_000)
         try:
             self.bus.write_i2c_block_data(
                 PCA_ADDR, self._LED0_ON_L + 4 * ch,
-                [0, 0, pulse & 0xFF, pulse >> 8])
-            log.debug("[srv] ch%d → %d°", ch, angle)
+                [0, 0, ticks & 0xFF, ticks >> 8])
+            log.debug("[srv] ch%d → %.0fµs", ch, us)
         except OSError as e:
             log.warning("[srv] i2c write failed: %s", e)
 
+    def set_speed(self, ch: int, speed: float):
+        """speed -1..1 → narrow pulse band around this channel's stop point."""
+        if self.bus is None or not (0 <= ch < NUM_SERVOS):
+            return
+        speed = max(-1.0, min(1.0, speed))
+        if abs(speed) < DEADBAND:
+            speed = 0.0
+        self._write_us(ch, STOP_US + STOP_TRIM_US[ch] + speed * FULL_SPEED_US)
+
+    def set(self, ch: int, angle: int):
+        """Calibration path for { "type": "servo" } messages.
+        angle 90 = nominal stop; each degree = 2µs of pulse width,
+        so 45/135 ≈ half speed either way. Used to find STOP_TRIM_US."""
+        if self.bus is None or not (0 <= ch < NUM_SERVOS):
+            return
+        angle = max(0, min(180, angle))
+        self._write_us(ch, STOP_US + (angle - 90) * 2)
+
     def center(self):
+        """All stop."""
         for i in range(NUM_SERVOS):
-            self.set(i, 90 + SERVO_TRIM[i])
+            self.set_speed(i, 0.0)
 
     def drive(self, vx: float, vy: float):
         for i in range(NUM_SERVOS):
-            speed = WHEEL_DX[i] * vx + WHEEL_DY[i] * vy  # -1..1
-            self.set(i, 90 + SERVO_TRIM[i] + int(speed * DRIVE_DEG))
+            self.set_speed(i, WHEEL_FWD[i] * vx + WHEEL_RIGHT[i] * vy)
 
     def cmd(self, direction: str):
         vx, vy = {

@@ -10,7 +10,7 @@ unchanged — enter the same `BDY-XXXXX` ID in the browser and drive.
 |---|---|
 | USB camera | any USB port (`/dev/video0`) |
 | PCA9685 servo driver | SDA → GPIO2 (pin 3), SCL → GPIO3 (pin 5), VCC → 3.3V (pin 1), GND → GND (pin 6) |
-| Wheel servos ×3 | PCA channels 0 / 1 / 2 (front / 120° / 240°, same as before) |
+| Wheel servos ×3 | PCA ch 0 = front-left, ch 1 = front-right, ch 2 = back (two in front, one sideways in back) |
 | Speaker (optional) | 3.5mm jack, HDMI, or USB audio |
 
 > The PCA9685's servo power (V+) still needs its own 5V supply, same as with
@@ -55,10 +55,15 @@ For a local hub: `python3 buddy_pi.py --host 192.168.1.50 --port 3000`
 
 ## Servo calibration
 
-Same as before — the trim table moved to `SERVO_TRIM` in `buddy_pi.py`.
-From the browser console (or any WS client), send
-`{ "type": "servo", "ch": i, "angle": 90 }` and nudge the angle until that
-wheel stops creeping, then set `SERVO_TRIM[i] = measured_stop_angle - 90`.
+These are pot-decoupled continuous-rotation conversions: pulse width maps to
+*speed* (1500µs = stop), and each servo's true stop point is wherever its
+frozen pot sits. To calibrate, from the browser console (or any WS client)
+send `{ "type": "servo", "ch": i, "angle": 90 }` and nudge the angle until
+that wheel fully stops. Each angle step = 2µs of pulse width, so set
+`STOP_TRIM_US[i] = (stop_angle - 90) * 2` in `buddy_pi.py`.
+
+If the robot is too fast/jumpy, lower `FULL_SPEED_US` (200 = full speed;
+try 100 for half speed).
 
 ## Start on boot (systemd)
 
