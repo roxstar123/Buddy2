@@ -117,7 +117,7 @@ wss.on('connection', (ws, req) => {
   const id    = rawId.startsWith('BDY-') ? rawId : `BDY-${rawId}`;
   const entry = getOrCreate(id);
 
-  // ── ESP32 device connects ─────────────────────────────────────────────────
+  // ── Buddy device connects (Raspberry Pi) ──────────────────────────────────
 
   if (role === 'device') {
     // Replace any stale device socket
@@ -172,7 +172,7 @@ wss.on('connection', (ws, req) => {
     }
 
     ws.on('message', (data, isBinary) => {
-      // Relay everything to the paired ESP32
+      // Relay everything to the paired device
       if (entry.device && entry.device.readyState === entry.device.OPEN) {
         entry.device.send(data, { binary: isBinary });
       }
@@ -196,6 +196,6 @@ server.listen(PORT, () => {
   console.log(`\n  buddy hub running\n`);
   console.log(`  -> http://localhost:${PORT}\n`);
   console.log(`  ws protocol:`);
-  console.log(`     ESP32  : ws://[server-ip]:${PORT}/ws?id=BDY-XXXXX&role=device`);
+  console.log(`     Device : ws://[server-ip]:${PORT}/ws?id=BDY-XXXXX&role=device`);
   console.log(`     Browser: ws://[server-ip]:${PORT}/ws?id=BDY-XXXXX&role=client\n`);
 });
