@@ -53,17 +53,33 @@ Defaults match the old firmware config (Railway host, wss on 443). Options:
 
 For a local hub: `python3 buddy_pi.py --host 192.168.1.50 --port 3000`
 
-## Servo calibration
+## How the servos are driven
 
-These are pot-decoupled continuous-rotation conversions: pulse width maps to
-*speed* (1500µs = stop), and each servo's true stop point is wherever its
-frozen pot sits. To calibrate, from the browser console (or any WS client)
-send `{ "type": "servo", "ch": i, "angle": 90 }` and nudge the angle until
-that wheel fully stops. Each angle step = 2µs of pulse width, so set
-`STOP_TRIM_US[i] = (stop_angle - 90) * 2` in `buddy_pi.py`.
+These are pot-decoupled continuous-rotation conversions: the servo board
+still thinks it's positional, but its pot is frozen, so ANY pulse drives the
+motor toward wherever the frozen pot happens to sit. There is no universally
+safe "stop pulse" — so at idle the code sends **no signal at all** (PCA9685
+channels fully off; wheels limp and silent). Pulses only flow while a
+button is held, and releasing the button / losing the connection cuts them.
 
-If the robot is too fast/jumpy, lower `FULL_SPEED_US` (200 = full speed;
-try 100 for half speed).
+## Servo calibration (finding each wheel's neutral)
+
+`NEUTRAL_US` in `buddy_pi.py` is each servo's frozen-pot pulse — it sets the
+midpoint that drive commands offset from. To find it, run the script, connect
+a browser, open its console (F12), and per wheel:
+
+```js
+ws.send(JSON.stringify({type:"servo", ch:0, angle:90}))   // sweep the angle
+ws.send(JSON.stringify({type:"servo", ch:0, angle:-1}))   // -1 = output off
+```
+
+Sweep the angle (0–180, fractions allowed) until the wheel stops moving —
+the Pi's log prints the pulse in µs for every command. Put that µs value in
+`NEUTRAL_US[ch]`. If a wheel never stops at any angle, its pot froze outside
+the pulse range: it will still drive, but only one direction will be strong —
+consider re-gluing that pot near center.
+
+If the robot is too fast/jumpy, lower `DRIVE_US` (200 = full speed; try 100).
 
 ## Start on boot (systemd)
 

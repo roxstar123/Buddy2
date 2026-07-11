@@ -10,10 +10,11 @@ Hardware:
   PCA9685 servo driver  → Pi I2C: SDA=GPIO2 (pin 3), SCL=GPIO3 (pin 5),
                           VCC=3.3V, GND=GND. Address 0x40 (pins tied low).
     3 continuous-rotation wheel servos (pots decoupled), tangent to chassis
-    center, positioned at 0°/120°/240° (clockwise from front, top-down):
-      Servo 0 → PCA channel 0  (front, 0°)
-      Servo 1 → PCA channel 1  (120°)
-      Servo 2 → PCA channel 2  (240°)
+    center — two in front, one sideways in back:
+      front-left  → PCA channel 0
+      front-right → PCA channel 1
+      back        → PCA channel 2
+    Servos get NO signal at idle — pulses only while a button is held.
   Speaker               → Pi 3.5mm jack / HDMI / USB audio (played via ffplay)
 
 Protocol (same as ESP32 firmware):
@@ -72,21 +73,23 @@ PCA_OSC_HZ = 27_000_000
 
 # ─── Continuous-rotation servo control (pulse width in µs) ────────────────────
 # These servos are pot-decoupled conversions: the electronics still think
-# they're positional, but the pot is frozen, so pulse width maps to *speed*:
-# 1500µs = stop, shorter = spin one way, longer = the other. The speed curve
-# saturates fast — ±FULL_SPEED_US from neutral is already flat-out, and
-# pushing far past that just slams the motor against its own controller
-# (that's the grinding noise). So all commands stay inside a narrow band.
+# they're positional, but the pot is frozen, so ANY pulse makes the board
+# drive the motor toward wherever the frozen pot says it is. A "stop pulse"
+# only truly stops a wheel if it exactly matches that servo's frozen pot
+# reading — anything else means permanent creep, buzz, or grind.
+#
+# So: when idle we send NO PULSE AT ALL (PCA9685 channel fully off). With no
+# signal, the servo electronics do nothing — the wheel sits silent and limp.
+# Pulses are only sent while a drive command is actively held; releasing the
+# button (or losing the connection) cuts all outputs.
 
-STOP_US       = 1500   # nominal stop pulse
-FULL_SPEED_US = 200    # pulse offset at 100% commanded speed (lower = slower robot)
-DEADBAND      = 0.05   # |speed| below this snaps to the exact stop pulse (no buzzing)
+# Per-channel pulse that holds the wheel still, i.e. the pulse matching each
+# servo's frozen pot reading. Only affects speed balance while DRIVING (we
+# never send it at idle). Calibrate per wheel — see README.
+NEUTRAL_US = [1500, 1500, 1500]
 
-# Per-channel stop trim, in µs. Each servo's true stop is wherever its frozen
-# pot happens to sit, not exactly 1500µs. Calibrate per wheel: send
-# { "type": "servo", "ch": i, "angle": 90 } and nudge the angle until that
-# wheel fully stops — each angle step = 2µs, so trim = (stop_angle - 90) * 2.
-STOP_TRIM_US = [0, 0, 0]
+DRIVE_US = 200    # offset from neutral at 100% commanded speed (lower = slower)
+DEADBAND = 0.05   # |speed| below this cuts the channel entirely
 
 # ─── Drive geometry ───────────────────────────────────────────────────────────
 # Three wheels tangent to the chassis circle — TWO IN FRONT, ONE IN BACK
@@ -119,8 +122,8 @@ class Servos:
             from smbus2 import SMBus
             self.bus = SMBus(1)  # Pi 3: I2C bus 1 (GPIO2/GPIO3)
             self._init_chip()
-            self.center()
-            log.info("[srv] PCA9685 ready — %d servos centred", NUM_SERVOS)
+            self.stop_all()
+            log.info("[srv] PCA9685 ready — all outputs off until driven")
         except Exception as e:
             self.bus = None
             log.warning("[srv] PCA9685 unavailable (%s) — drive disabled", e)
@@ -146,28 +149,47 @@ class Servos:
         except OSError as e:
             log.warning("[srv] i2c write failed: %s", e)
 
+    def _off(self, ch: int):
+        """Cut the channel entirely — no pulse, servo goes idle/limp.
+        Bit 4 of LED_OFF_H is the PCA9685 full-off flag."""
+        try:
+            self.bus.write_i2c_block_data(
+                PCA_ADDR, self._LED0_ON_L + 4 * ch, [0, 0, 0, 0x10])
+            log.debug("[srv] ch%d → off", ch)
+        except OSError as e:
+            log.warning("[srv] i2c write failed: %s", e)
+
     def set_speed(self, ch: int, speed: float):
-        """speed -1..1 → narrow pulse band around this channel's stop point."""
+        """speed -1..1 → pulse around this channel's neutral; 0 → output off."""
         if self.bus is None or not (0 <= ch < NUM_SERVOS):
             return
         speed = max(-1.0, min(1.0, speed))
         if abs(speed) < DEADBAND:
-            speed = 0.0
-        self._write_us(ch, STOP_US + STOP_TRIM_US[ch] + speed * FULL_SPEED_US)
+            self._off(ch)
+        else:
+            self._write_us(ch, NEUTRAL_US[ch] + speed * DRIVE_US)
 
-    def set(self, ch: int, angle: int):
+    def set(self, ch: int, angle: float):
         """Calibration path for { "type": "servo" } messages.
-        angle 90 = nominal stop; each degree = 2µs of pulse width,
-        so 45/135 ≈ half speed either way. Used to find STOP_TRIM_US."""
+        Maps angle 0-180 linearly onto 500-2500µs (so 90 = 1500µs,
+        1° ≈ 11µs; fractional angles allowed for fine steps). The µs value
+        is logged — when you find the angle where the wheel stops, put that
+        µs into NEUTRAL_US. angle < 0 cuts the channel (off)."""
         if self.bus is None or not (0 <= ch < NUM_SERVOS):
             return
-        angle = max(0, min(180, angle))
-        self._write_us(ch, STOP_US + (angle - 90) * 2)
+        if angle < 0:
+            self._off(ch)
+            return
+        us = 500 + min(180.0, angle) * 2000.0 / 180.0
+        log.info("[srv] ch%d calibrate → %.0fµs (angle %.1f)", ch, us, angle)
+        self._write_us(ch, us)
 
-    def center(self):
-        """All stop."""
+    def stop_all(self):
+        """All outputs off — nothing is driven, nothing hums."""
+        if self.bus is None:
+            return
         for i in range(NUM_SERVOS):
-            self.set_speed(i, 0.0)
+            self._off(i)
 
     def drive(self, vx: float, vy: float):
         for i in range(NUM_SERVOS):
@@ -308,11 +330,11 @@ class Buddy:
                 log.info("[ws]  browser online")
             elif t == "client_disconnected":
                 self.peer_online = False
-                self.servos.center()
+                self.servos.stop_all()
                 self.speaker.stop()
                 log.info("[ws]  browser offline")
             elif t == "servo":
-                self.servos.set(int(doc.get("ch", 0)), int(doc.get("angle", 90)))
+                self.servos.set(int(doc.get("ch", 0)), float(doc.get("angle", 90)))
             elif t == "cmd":
                 self.servos.cmd(doc.get("dir", "stop"))
 
@@ -339,12 +361,12 @@ class Buddy:
             except Exception as e:
                 log.warning("[ws]  disconnected (%s) — retrying in 3s", e)
             self.peer_online = False
-            self.servos.center()
+            self.servos.stop_all()
             self.speaker.stop()
             await asyncio.sleep(3)
 
     def shutdown(self):
-        self.servos.center()
+        self.servos.stop_all()
         self.speaker.stop()
         self.camera.release()
 
