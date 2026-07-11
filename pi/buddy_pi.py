@@ -91,14 +91,16 @@ NEUTRAL_US = [1500, 1500, 1500]
 DRIVE_US = 200    # offset from neutral at 100% commanded speed (lower = slower)
 DEADBAND = 0.05   # |speed| below this cuts the channel entirely
 
-# ─── Stall-protection workaround ──────────────────────────────────────────────
+# ─── Stall-protection workaround: command dithering ───────────────────────────
 # With the pot frozen, the servo firmware sees a position error that never
-# shrinks, decides the motor is stalled, and ramps power down after a few
-# seconds (power-cycling resets it — the fade-out-and-squeak symptom).
-# Workaround: while driving, briefly cut the signal every burst so the
-# protection timer restarts. Wheel inertia smooths over the gaps.
-BURST_ON_MS  = 400   # drive pulses for this long...
-BURST_OFF_MS = 60    # ...then go silent for this long. 0 = disable bursting.
+# shrinks, decides the motor is stalled, and cuts power after a few seconds.
+# Observed behavior: sending a DIFFERENT command re-arms it briefly; repeating
+# the same value (or gaps of silence) does not. So while any channel is
+# active, we alternate its pulse between the wanted value and a slightly
+# different one — the servo keeps seeing "new order", keeps re-arming, and
+# the wheel speed barely changes.
+DITHER_US = 60    # how far the alternate pulse deviates (away from neutral)
+DITHER_MS = 300   # how often to alternate. 0 = disable dithering.
 
 # ─── Drive geometry ───────────────────────────────────────────────────────────
 # Three wheels tangent to the chassis circle — TWO IN FRONT, ONE IN BACK
@@ -184,22 +186,24 @@ class Servos:
         else:
             self._write_us(ch, NEUTRAL_US[ch] + speed * DRIVE_US)
 
-    # Burst support: briefly starve active channels of signal, then resume.
-    # Covers both drive targets and calibration pulses.
-    def burst_active(self) -> bool:
+    # Dither support: rewrite every active channel, alternating between its
+    # base pulse and base ± DITHER_US (pushed away from neutral so the wheel
+    # never reverses). Covers both drive targets and calibration pulses.
+    def dither_active(self) -> bool:
         return any(self.targets) or any(u is not None for u in self.cal_us)
 
-    def burst_pause(self):
-        for i in range(NUM_SERVOS):
-            if self.targets[i] or self.cal_us[i] is not None:
-                self._off(i)
-
-    def burst_resume(self):
+    def dither_write(self, phase: bool):
         for i in range(NUM_SERVOS):
             if self.cal_us[i] is not None:
-                self._write_us(i, self.cal_us[i])
+                base, ref = self.cal_us[i], 1500
             elif self.targets[i]:
-                self._write_us(i, NEUTRAL_US[i] + self.targets[i] * DRIVE_US)
+                base = NEUTRAL_US[i] + self.targets[i] * DRIVE_US
+                ref  = NEUTRAL_US[i]
+            else:
+                continue
+            if phase:
+                base += DITHER_US if base >= ref else -DITHER_US
+            self._write_us(i, base)
 
     def set(self, ch: int, angle: float):
         """Calibration path for { "type": "servo" } messages.
@@ -347,21 +351,20 @@ class Buddy:
                     await ws.send(bytes([TYPE_VIDEO]) + jpg)
             await asyncio.sleep(max(0.0, interval - (loop.time() - start)))
 
-    # ── Stall-protection burst task ──────────────────────────────────────────
-    # While any wheel is being driven, cut its signal for BURST_OFF_MS every
-    # BURST_ON_MS so the servo's internal stall-protection timer keeps
-    # resetting (frozen pot = permanent "stall" as far as it can tell).
+    # ── Stall-protection dither task ─────────────────────────────────────────
+    # While any channel is active, keep alternating its pulse so the servo
+    # firmware keeps seeing a "new" command and re-arms instead of latching
+    # its stall protection (frozen pot = permanent "stall" to it).
     async def burst_task(self):
-        if BURST_OFF_MS <= 0:
+        if DITHER_MS <= 0:
             return
+        phase = False
         while True:
-            if self.servos.burst_active():
-                await asyncio.sleep(BURST_ON_MS / 1000)
-                if not self.servos.burst_active():
-                    continue  # released mid-burst — outputs already off
-                self.servos.burst_pause()
-                await asyncio.sleep(BURST_OFF_MS / 1000)
-                self.servos.burst_resume()
+            if self.servos.dither_active():
+                await asyncio.sleep(DITHER_MS / 1000)
+                phase = not phase
+                if self.servos.dither_active():
+                    self.servos.dither_write(phase)
             else:
                 await asyncio.sleep(0.05)
 
