@@ -102,6 +102,13 @@ DEADBAND = 0.05   # |speed| below this cuts the channel entirely
 DITHER_US = 60    # how far the alternate pulse deviates (away from neutral)
 DITHER_MS = 300   # how often to alternate. 0 = disable dithering.
 
+# Rest cycling: the protection clears after a LONG signal absence (~1-2s),
+# so drive in bursts — REST_ON_MS of driving, then REST_OFF_MS of silence.
+# Motion pulses, but never permanently stalls. Tune REST_ON_MS comfortably
+# below your measured time-to-stall. 0 = disable resting.
+REST_ON_MS  = 2000
+REST_OFF_MS = 1500
+
 # ─── Drive geometry ───────────────────────────────────────────────────────────
 # Three wheels tangent to the chassis circle — TWO IN FRONT, ONE IN BACK
 # (top-down view, positions measured clockwise from straight ahead):
@@ -204,6 +211,12 @@ class Servos:
             if phase:
                 base += DITHER_US if base >= ref else -DITHER_US
             self._write_us(i, base)
+
+    def rest_pause(self):
+        """Silence all active channels for a rest window."""
+        for i in range(NUM_SERVOS):
+            if self.targets[i] or self.cal_us[i] is not None:
+                self._off(i)
 
     def set(self, ch: int, angle: float):
         """Calibration path for { "type": "servo" } messages.
@@ -351,22 +364,33 @@ class Buddy:
                     await ws.send(bytes([TYPE_VIDEO]) + jpg)
             await asyncio.sleep(max(0.0, interval - (loop.time() - start)))
 
-    # ── Stall-protection dither task ─────────────────────────────────────────
-    # While any channel is active, keep alternating its pulse so the servo
-    # firmware keeps seeing a "new" command and re-arms instead of latching
-    # its stall protection (frozen pot = permanent "stall" to it).
+    # ── Stall-protection task: dither + rest cycling ─────────────────────────
+    # While any channel is active: alternate its pulse (dither) so the servo
+    # keeps seeing "new" commands, and every REST_ON_MS go fully silent for
+    # REST_OFF_MS — the only thing observed to reliably clear the protection.
     async def burst_task(self):
-        if DITHER_MS <= 0:
-            return
         phase = False
+        driven_s = 0.0
+        step = (DITHER_MS if DITHER_MS > 0 else 100) / 1000
         while True:
-            if self.servos.dither_active():
-                await asyncio.sleep(DITHER_MS / 1000)
-                phase = not phase
-                if self.servos.dither_active():
-                    self.servos.dither_write(phase)
-            else:
+            if not self.servos.dither_active():
+                driven_s = 0.0
                 await asyncio.sleep(0.05)
+                continue
+            await asyncio.sleep(step)
+            if not self.servos.dither_active():
+                continue
+            driven_s += step
+            if REST_OFF_MS > 0 and driven_s >= REST_ON_MS / 1000:
+                self.servos.rest_pause()
+                await asyncio.sleep(REST_OFF_MS / 1000)
+                driven_s = 0.0
+                phase = False
+                if self.servos.dither_active():
+                    self.servos.dither_write(phase)  # resume still-held commands
+            elif DITHER_MS > 0:
+                phase = not phase
+                self.servos.dither_write(phase)
 
     # ── Incoming messages ────────────────────────────────────────────────────
     async def recv_task(self, ws):
