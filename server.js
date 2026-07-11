@@ -104,7 +104,22 @@ server.on('upgrade', (req, socket, head) => {
   });
 });
 
+// Heartbeat: ping every socket periodically and reap ones that never pong,
+// so dropped devices/clients are deregistered promptly instead of lingering
+// as zombies until TCP times out.
+const HEARTBEAT_MS = 30000;
+setInterval(() => {
+  wss.clients.forEach(ws => {
+    if (ws.isAlive === false) return ws.terminate();
+    ws.isAlive = false;
+    ws.ping();
+  });
+}, HEARTBEAT_MS);
+
 wss.on('connection', (ws, req) => {
+  ws.isAlive = true;
+  ws.on('pong', () => { ws.isAlive = true; });
+
   const params = new URLSearchParams(req.url.replace('/ws?', ''));
   const rawId  = (params.get('id') || '').toUpperCase().trim();
   const role   = (params.get('role') || '').toLowerCase();
@@ -142,6 +157,9 @@ wss.on('connection', (ws, req) => {
 
     ws.on('close', () => {
       console.log(`[-] device   ${id}`);
+      // Only deregister if WE are still the registered device — a replaced
+      // zombie socket's late close event must not wipe out its replacement.
+      if (entry.device !== ws) return;
       entry.device = null;
       send(entry.client, JSON.stringify({ type: 'buddy_disconnected' }));
       // Clean up entry if both gone
@@ -180,6 +198,7 @@ wss.on('connection', (ws, req) => {
 
     ws.on('close', () => {
       console.log(`[-] client   ${id}`);
+      if (entry.client !== ws) return;  // replaced socket — see device handler
       entry.client = null;
       send(entry.device, JSON.stringify({ type: 'client_disconnected' }));
       if (!entry.device) buddies.delete(id);
