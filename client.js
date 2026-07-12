@@ -264,7 +264,7 @@ function playPCM16(arrayBuffer) {
 // Speak button — hold to talk
 
 el.speakBtn.addEventListener('mousedown',   startSpeaking);
-el.speakBtn.addEventListener('touchstart',  startSpeaking, { passive: true });
+el.speakBtn.addEventListener('touchstart',  e => { e.preventDefault(); startSpeaking(); });
 el.speakBtn.addEventListener('mouseup',     stopSpeaking);
 el.speakBtn.addEventListener('mouseleave',  stopSpeaking);
 el.speakBtn.addEventListener('touchend',    stopSpeaking);
