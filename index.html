@@ -611,6 +611,11 @@
       background: var(--accent-dim);
     }
 
+    .disconnect-btn:hover {
+      border-color: var(--accent);
+      color: var(--accent);
+    }
+
     .mic-icon {
       font-size: 13px;
     }
@@ -1071,6 +1076,14 @@
             <button id="speak-btn" class="speak-btn">
               <span class="mic-icon">&#9671;</span>
               hold to speak
+            </button>
+          </div>
+
+          <div>
+            <div class="sidebar-block-label">session</div>
+            <button id="disconnect-btn" class="speak-btn disconnect-btn">
+              <span>&#10005;</span>
+              disconnect
             </button>
           </div>
 

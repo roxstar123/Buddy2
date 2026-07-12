@@ -23,6 +23,7 @@ const el = {
   micToggle:      $('mic-toggle'),
   speakerToggle:  $('speaker-toggle'),
   speakBtn:       $('speak-btn'),
+  disconnectBtn:  $('disconnect-btn'),
 };
 
 // ── State ─────────────────────────────────────────────────────────────────────
@@ -171,6 +172,22 @@ function handleTextMessage(msg, id) {
 }
 
 el.connectBtn.addEventListener('click', connect);
+
+el.disconnectBtn.addEventListener('click', () => {
+  if (!ws) {
+    setHint('not connected.');
+    return;
+  }
+  // Stop anything in flight, then close cleanly. Setting connected=false
+  // first keeps the onclose handler from reporting it as a lost connection.
+  releaseDpad();
+  stopMic();
+  connected = false;
+  ws.close();
+  ws = null;
+  resetUI();
+  setHint('disconnected from buddy.');
+});
 
 el.input.addEventListener('keydown', e => {
   if (e.key === 'Enter') connect();
