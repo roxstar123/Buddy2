@@ -107,7 +107,7 @@ DITHER_MS = 0     # how often to alternate. 0 = disable dithering (default: off)
 # Motion pulses, but never permanently stalls. Tune REST_ON_MS comfortably
 # below your measured time-to-stall. 0 = disable resting.
 REST_ON_MS  = 4000  # measured cutoff ≈ 5s — rest comfortably before it
-REST_OFF_MS = 100   # brief break between drive windows (0 = never rest)
+REST_OFF_MS = 50    # brief break between drive windows (0 = never rest)
 
 # Rest style: True = command each channel's NEUTRAL_US during the rest —
 # the firmware sees "target reached" (pulse matches the centered pot) and
