@@ -107,13 +107,15 @@ DITHER_MS = 0     # how often to alternate. 0 = disable dithering (default: off)
 # Motion pulses, but never permanently stalls. Tune REST_ON_MS comfortably
 # below your measured time-to-stall. 0 = disable resting.
 REST_ON_MS  = 4000  # measured cutoff ≈ 5s — rest comfortably before it
-REST_OFF_MS = 0     # default: off — enable with --rest-off for driving sessions
+REST_OFF_MS = 100   # brief break between drive windows (0 = never rest)
 
-# Rest style: False = go silent (no signal) during the rest window.
-# True = command each channel's NEUTRAL_US instead — the firmware sees
-# "target reached" (pulse matches the frozen pot), which may reset its
-# stall detector much faster than silence does.
-REST_NEUTRAL = False
+# Rest style: True = command each channel's NEUTRAL_US during the rest —
+# the firmware sees "target reached" (pulse matches the centered pot) and
+# resets its stall detector far faster than silence does. False (or
+# --rest-silence) = cut the signal entirely during the rest instead.
+# NOTE: rest cycling applies only to D-pad driving; browser-console
+# calibration commands always get one raw steady pulse.
+REST_NEUTRAL = True
 
 # ─── Drive geometry ───────────────────────────────────────────────────────────
 # Three wheels tangent to the chassis circle — TWO IN FRONT, ONE IN BACK
@@ -500,7 +502,9 @@ def parse_args():
     p.add_argument("--rest-off",  default=REST_OFF_MS, type=int,
                    help="rest window in ms, 0 = never rest (default %(default)s)")
     p.add_argument("--rest-neutral", action="store_true",
-                   help="rest at the neutral pulse ('target reached') instead of silence")
+                   help="rest at the neutral pulse ('target reached') — this is the default")
+    p.add_argument("--rest-silence", action="store_true",
+                   help="rest with no signal at all instead of the neutral pulse")
     p.add_argument("--neutral",   default=None,
                    help="per-channel neutral pulses, e.g. --neutral 1500,1620,1480")
     p.add_argument("-v", "--verbose", action="store_true")
@@ -525,7 +529,7 @@ def main():
         DITHER_MS=args.dither_ms,
         REST_ON_MS=args.rest_on,
         REST_OFF_MS=args.rest_off,
-        REST_NEUTRAL=args.rest_neutral,
+        REST_NEUTRAL=not args.rest_silence,
     )
     if args.neutral:
         vals = [int(v) for v in args.neutral.split(",")]
