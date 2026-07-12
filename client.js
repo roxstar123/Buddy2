@@ -264,20 +264,38 @@ function playPCM16(arrayBuffer) {
 // Speak button — hold to talk
 
 el.speakBtn.addEventListener('mousedown',   startSpeaking);
-el.speakBtn.addEventListener('touchstart',  startSpeaking, { passive: true });
+el.speakBtn.addEventListener('touchstart',  e => { e.preventDefault(); startSpeaking(); });
 el.speakBtn.addEventListener('mouseup',     stopSpeaking);
 el.speakBtn.addEventListener('mouseleave',  stopSpeaking);
 el.speakBtn.addEventListener('touchend',    stopSpeaking);
 el.speakBtn.addEventListener('touchcancel', stopSpeaking);
 
-async function startSpeaking() {
-  if (!connected || micMuted) return;
+let speakSession = 0;
+let sentBytes    = 0;
 
+async function startSpeaking() {
+  if (!connected) return;
+  if (micMuted) {
+    setHint('mic is muted — tap the MIC toggle first.', true);
+    return;
+  }
+  if (mediaRecorder) return; // already recording (e.g. ghost mousedown after touchstart)
+
+  const session = ++speakSession;
   el.speakBtn.classList.add('speaking');
+  sentBytes = 0;
 
   try {
-    micStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
 
+    // Button released (or pressed again) while the permission prompt was up —
+    // don't start a recorder nobody will ever stop.
+    if (session !== speakSession || !el.speakBtn.classList.contains('speaking')) {
+      stream.getTracks().forEach(t => t.stop());
+      return;
+    }
+
+    micStream = stream;
     mediaRecorder = new MediaRecorder(micStream);
 
     mediaRecorder.ondataavailable = async e => {
@@ -290,11 +308,20 @@ async function startSpeaking() {
       typed[0]     = 0x02;
       typed.set(new Uint8Array(raw), 1);
       ws.send(typed.buffer);
+
+      // Live meter: real voice sends multiple KB/s; a dead or muted mic
+      // sends ~0.1 KB chunks. Lets you diagnose without server logs.
+      sentBytes += raw.byteLength;
+      setHint(`sending audio... ${(sentBytes / 1024).toFixed(1)} KB`);
+    };
+
+    mediaRecorder.onerror = e => {
+      setHint(`mic recorder error: ${(e.error && e.error.name) || 'unknown'}`, true);
     };
 
     mediaRecorder.start(250); // 250ms chunks
   } catch (err) {
-    setHint('mic access denied — check browser permissions.', true);
+    setHint(`mic access failed: ${err.name || err}`, true);
     el.speakBtn.classList.remove('speaking');
   }
 }
