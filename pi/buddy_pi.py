@@ -106,8 +106,8 @@ DITHER_MS = 0     # how often to alternate. 0 = disable dithering (default: off)
 # so drive in bursts — REST_ON_MS of driving, then REST_OFF_MS of silence.
 # Motion pulses, but never permanently stalls. Tune REST_ON_MS comfortably
 # below your measured time-to-stall. 0 = disable resting.
-REST_ON_MS  = 2000
-REST_OFF_MS = 0    # default: off — enable with --rest-off for driving sessions
+REST_ON_MS  = 4000  # measured cutoff ≈ 5s — rest comfortably before it
+REST_OFF_MS = 0     # default: off — enable with --rest-off for driving sessions
 
 # Rest style: False = go silent (no signal) during the rest window.
 # True = command each channel's NEUTRAL_US instead — the firmware sees
