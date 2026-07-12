@@ -287,10 +287,12 @@ import threading as _threading
 
 
 class Speaker:
-    def __init__(self):
+    def __init__(self, dump_path: str | None = None):
         self.q = _queue.Queue(maxsize=64)
         self.proc = None
         self.disabled = False
+        self.dump_path = dump_path
+        self.dump_file = None
         _threading.Thread(target=self._worker, daemon=True, name="spk").start()
 
     # ── async-loop side: never blocks ─────────────────────────────────────
@@ -323,14 +325,23 @@ class Speaker:
             if is_new_webm:
                 log.info("[spk] webm audio stream from browser (%d bytes)", len(chunk))
                 self._spawn("matroska")
+                self._dump_open()
             elif is_new_ogg:
                 log.info("[spk] ogg audio stream from browser (%d bytes)", len(chunk))
                 self._spawn("ogg")
+                self._dump_open()
             elif self.proc is None or self.proc.poll() is not None:
                 # mid-stream chunk with no live player — we missed the header,
                 # nothing useful to do until the next fresh stream arrives
                 self._kill()
                 continue
+
+            if self.dump_file:
+                try:
+                    self.dump_file.write(chunk)
+                    self.dump_file.flush()
+                except OSError:
+                    pass
 
             if self.proc and self.proc.stdin:
                 try:
@@ -340,12 +351,25 @@ class Speaker:
                     log.warning("[spk] ffplay pipe broke — player died mid-stream")
                     self._kill()
 
+    def _dump_open(self):
+        """--dump-audio: start a fresh capture file for this stream."""
+        if not self.dump_path:
+            return
+        try:
+            if self.dump_file:
+                self.dump_file.close()
+            self.dump_file = open(self.dump_path, "wb")
+            log.info("[spk] dumping stream to %s", self.dump_path)
+        except OSError as e:
+            log.warning("[spk] dump open failed: %s", e)
+            self.dump_file = None
+
     def _spawn(self, fmt: str):
         self._kill()
+        # Standard buffering on purpose: low-latency flags (nobuffer /
+        # probesize 32) proved too aggressive for chunked network audio.
         cmd = ["ffplay", "-nodisp", "-autoexit", "-loglevel", "warning",
-               "-fflags", "nobuffer", "-flags", "low_delay",
-               "-f", fmt, "-probesize", "32", "-analyzeduration", "0",
-               "-i", "pipe:0"]
+               "-f", fmt, "-i", "pipe:0"]
         try:
             # stderr inherited on purpose: if ffplay can't open an audio
             # output device or decode a stream, that must land in the journal.
@@ -413,7 +437,7 @@ class Buddy:
     def __init__(self, args):
         self.args = args
         self.servos  = Servos()
-        self.speaker = Speaker()
+        self.speaker = Speaker(dump_path=args.dump_audio)
         self.camera  = Camera(args.camera, args.width, args.height, args.fps, args.quality)
         self.peer_online = False
 
@@ -553,6 +577,8 @@ def parse_args():
                    help="rest with no signal at all instead of the neutral pulse")
     p.add_argument("--neutral",   default=None,
                    help="per-channel neutral pulses, e.g. --neutral 1500,1620,1480")
+    p.add_argument("--dump-audio", default=None, metavar="PATH",
+                   help="also save incoming browser audio to this file (debug)")
     p.add_argument("-v", "--verbose", action="store_true")
     args = p.parse_args()
     args.id = args.id.upper().strip()
