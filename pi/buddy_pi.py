@@ -100,14 +100,14 @@ DEADBAND = 0.05   # |speed| below this cuts the channel entirely
 # different one — the servo keeps seeing "new order", keeps re-arming, and
 # the wheel speed barely changes.
 DITHER_US = 60    # how far the alternate pulse deviates (away from neutral)
-DITHER_MS = 300   # how often to alternate. 0 = disable dithering.
+DITHER_MS = 0     # how often to alternate. 0 = disable dithering (default: off).
 
 # Rest cycling: the protection clears after a LONG signal absence (~1-2s),
 # so drive in bursts — REST_ON_MS of driving, then REST_OFF_MS of silence.
 # Motion pulses, but never permanently stalls. Tune REST_ON_MS comfortably
 # below your measured time-to-stall. 0 = disable resting.
 REST_ON_MS  = 2000
-REST_OFF_MS = 1500
+REST_OFF_MS = 0    # default: off — enable with --rest-off for driving sessions
 
 # Rest style: False = go silent (no signal) during the rest window.
 # True = command each channel's NEUTRAL_US instead — the firmware sees
