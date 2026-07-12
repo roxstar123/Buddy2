@@ -87,7 +87,7 @@ PCA_OSC_HZ = 27_000_000
 # servo's frozen pot reading. Only affects speed balance while DRIVING (we
 # never send it at idle). Calibrate per wheel — see README.
 # Measured per-wheel: [front-left (ch0), front-right (ch1), back (ch2)]
-NEUTRAL_US = [1500, 1500, 1494]   # back: stop angle 89.5 → 1494µs
+NEUTRAL_US = [1489, 1500, 1494]   # FL: 89 → 1489µs · back: 89.5 → 1494µs
 
 DRIVE_US = 100    # offset from neutral at 100% commanded speed (lower = slower)
 DEADBAND = 0.05   # |speed| below this cuts the channel entirely
