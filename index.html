@@ -126,13 +126,23 @@
       display: block;
       height: 1.29em;
       width: auto;
+    }
+
+    .hero-headline .logo-line {
+      display: flex;
+      align-items: flex-end;
       margin-top: -0.22em;
       margin-bottom: -0.15em;
     }
 
+    /* nudges put the period on the logo's letter baseline, tucked
+       against the Y (the PNG has transparent padding built in) */
     .hero-headline .line-accent {
-      display: block;
       color: var(--accent);
+      line-height: 1;
+      position: relative;
+      top: -0.105em;
+      margin-left: -0.16em;
     }
 
     .hero-sub {
@@ -964,7 +974,7 @@
       <div>
         <h1 class="hero-headline">
           YOUR<br>
-          <img class="hero-logo" src="BuddyLogoYellow.png" alt="BUDDY"><span class="line-accent">.</span>
+          <span class="logo-line"><img class="hero-logo" src="BuddyLogoYellow.png" alt="BUDDY"><span class="line-accent">.</span></span>
         </h1>
         <div class="hero-sub">
           <p>A physical device that sits in your home. You connect to it from anywhere. You see what it sees, hear what it hears, move it around, and speak through it.</p>
